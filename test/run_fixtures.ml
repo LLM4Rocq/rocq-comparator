@@ -49,6 +49,54 @@ let member k = function `Assoc l -> List.assoc_opt k l | _ -> None
 let str k j = match member k j with Some (`String s) -> Some s | _ -> None
 let int_ k j = match member k j with Some (`Int n) -> Some n | _ -> None
 
+(* --- prebuild support (for the stdlib-shadowing fixture) --------------------
+   A fixture may list, under "prebuild" in expected.json, .v files that must be
+   compiled before the comparator runs (e.g. a fake Stdlib/Arith.v that the
+   config then maps over the real one with -Q . "").  We never compile inside
+   the repository -- that would drop .vo/.glob files into test/fixtures -- so
+   the whole fixture is copied to a temporary directory, the prebuild files are
+   compiled there with the switch's own rocq, and the comparator is pointed at
+   the copy.  Returns the directory the fixture should actually run in. *)
+
+let rec copy_tree src dst =
+  match Sys.is_directory src with
+  | true ->
+    (try Unix.mkdir dst 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+    Array.iter (fun e -> copy_tree (Filename.concat src e) (Filename.concat dst e))
+      (Sys.readdir src)
+  | false ->
+    let ic = open_in_bin src and oc = open_out_bin dst in
+    let n = in_channel_length ic in
+    output_string oc (really_input_string ic n);
+    close_in ic; close_out oc
+  | exception _ -> ()
+
+(* the switch's rocq binary sits next to the comparator's opam bin; fall back
+   to PATH (correct under `dune test` in the project switch) *)
+let rocq_bin exe =
+  let guess =
+    try
+      let root = Filename.(dirname (dirname (dirname (dirname exe)))) in
+      let c = Filename.concat (Filename.concat root "_opam/bin") "rocq" in
+      if Sys.file_exists c then Some c else None
+    with _ -> None
+  in
+  match guess with Some p -> p | None -> "rocq"
+
+let prebuild ~exe ~dir files =
+  let scratch = Filename.temp_file "rcfix_pb" "" in
+  Sys.remove scratch;
+  Unix.mkdir scratch 0o755;
+  copy_tree dir scratch;
+  let rocq = rocq_bin exe in
+  List.iter
+    (fun f ->
+       let path = Filename.concat scratch f in
+       (* -Q <scratch> "" so the fake library gets its intended logical name *)
+       ignore (run [ rocq; "compile"; "-Q"; scratch; ""; path ]))
+    files;
+  scratch
+
 let contains ~needle s =
   let n = String.length needle and m = String.length s in
   if n = 0 then true
@@ -166,6 +214,14 @@ let () =
            [ { name; pass = false; why = "no expected.json" } ]
          else
            let expected = Yojson.Safe.from_string (read_file exp_path) in
+           (* a "prebuild" fixture is compiled and run in a scratch copy *)
+           let dir =
+             match member "prebuild" expected with
+             | Some (`List l) ->
+               prebuild ~exe ~dir
+                 (List.filter_map (function `String s -> Some s | _ -> None) l)
+             | _ -> dir
+           in
            let main =
              match member "batch" expected with
              | Some (`List l) ->

@@ -78,10 +78,9 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
      permitted assumptions and are pinned in the solution (same statement, and
      either still assumed or honestly proved). The challenge is trusted input,
      which is what makes this safe; a challenge that wants the strict
-     behaviour turns it off. The config field "permit_challenge_axioms" that
-     drives this is wired by the integrator (Config.t does not carry it yet);
-     until then the default stands here. *)
-  let permit_challenge_axioms = true in
+     behaviour turns it off. The challenge is trusted input, which is what
+     makes this safe. *)
+  let permit_challenge_axioms = cfg.Config.permit_challenge_axioms in
   Hashtbl.replace checks "filter" h.filter_status;
   try
     (* 1. init *)
@@ -195,12 +194,19 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
                 with_version (finish ~targets:reports r d)
               | Result.Ok reports -> (
                 Hashtbl.replace checks "axioms" Verdict.Ok;
-                (* 7. hygiene + libraries *)
+                (* 7. hygiene + libraries.  The shadowing check (a project
+                   directory bound to an installed namespace) is a library
+                   violation and is run first, before the per-constant
+                   hygiene scan, because it invalidates the meaning of every
+                   loaded name. *)
                 match
-                  h.envcheck ~top ~trusted_roots:(h.trusted_roots cfg)
-                    ~permitted_libraries:cfg.Config.permitted_libraries
-                    ~impredicative_set:cfg.Config.impredicative_set
-                    ~indices_matter:cfg.Config.indices_matter
+                  match Shadowing.check ~top with
+                  | Result.Error e -> Result.Error e
+                  | Result.Ok () ->
+                    h.envcheck ~top ~trusted_roots:(h.trusted_roots cfg)
+                      ~permitted_libraries:cfg.Config.permitted_libraries
+                      ~impredicative_set:cfg.Config.impredicative_set
+                      ~indices_matter:cfg.Config.indices_matter
                 with
                 | Result.Error (Verdict.Library_violation, d) ->
                   Hashtbl.replace checks "hygiene" Verdict.Ok;
