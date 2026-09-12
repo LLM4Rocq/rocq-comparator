@@ -45,6 +45,8 @@ let init ~(args : string list) : unit =
     in
     Coqinit.init_runtime ~usage opts;
     Coqinit.init_document opts;
+    (* enable memprof-based allocation-point interruption (see compile_library) *)
+    Memprof_limits.start_memprof_limits ();
     (* Swallow feedback; keep the last messages for error reporting. *)
     ignore
       (Feedback.add_feeder (fun fb ->
@@ -141,6 +143,12 @@ let compile_library ?(filter = fun _ -> Result.Ok ())
     | None -> ""
   in
   let rec loop st =
+    (* When a proof is open, parse the next sentence in the current proof mode.
+       [get_default_proof_mode] is a synterp-stage option that tracks the file's
+       own [Set Default Proof Mode] and the mode a plugin sets on import (e.g.
+       [From Ltac2 Require Import Ltac2] switches it to "Ltac2"), so for a
+       whole-file compile it is the same mode coqc would parse with. Verified on
+       Classic, ssreflect and Ltac2 solutions. *)
     let pm = if proof_open st then Some (Synterp.get_default_proof_mode ()) else None in
     let next =
       match Procq.Entry.parse (Pvernac.main_entry pm) pa with
@@ -162,16 +170,44 @@ let compile_library ?(filter = fun _ -> Result.Ok ())
       if deadline <> infinity && remaining <= 0. then
         raise (Outcome_exn (Timeout (text_of loc)));
       let run () = Vernacinterp.interp ~intern:Vernacinterp.fs_intern ~st vc in
-      let r =
-        try if deadline = infinity then Result.Ok (run ()) else Control.timeout remaining run ()
-        with e when CErrors.noncritical e ->
-          let e, info = Exninfo.capture e in
-          let loc = match Loc.get_loc info with Some l -> Some l | None -> loc in
-          raise (Outcome_exn (Error (err_of_loc src loc (pp (CErrors.iprint (e, info))))))
+      let on_error e =
+        let e, info = Exninfo.capture e in
+        let loc = match Loc.get_loc info with Some l -> Some l | None -> loc in
+        raise (Outcome_exn (Error (err_of_loc src loc (pp (CErrors.iprint (e, info))))))
       in
-      (match r with
-       | Result.Ok st' -> loop st'
-       | Result.Error _ -> raise (Outcome_exn (Timeout (text_of loc))))
+      if deadline = infinity then
+        (match run () with
+         | st' -> loop st'
+         | exception e when CErrors.noncritical e -> on_error e)
+      else begin
+        (* Two interruption layers guard the solution. [Control.timeout] fires
+           at the prover's own checkpoints; a [memprof-limits] token, tripped by
+           a watchdog thread at the deadline, fires at allocation points, which
+           is what stops an allocation-heavy loop that never reaches a
+           Control.timeout checkpoint (e.g. a runaway [vm_compute]). Same
+           combination coq-lsp and rocq-tools use. *)
+        let token = Memprof_limits.Token.create () in
+        let watchdog =
+          Thread.create
+            (fun () ->
+               let dl = Unix.gettimeofday () +. remaining +. 0.5 in
+               while (not (Memprof_limits.Token.is_set token)) && Unix.gettimeofday () < dl do
+                 Thread.delay 0.05
+               done;
+               if Unix.gettimeofday () >= dl then Memprof_limits.Token.set token)
+            ()
+        in
+        let stop () = Memprof_limits.Token.set token; Thread.join watchdog in
+        let timed_out () =
+          Vernacstate.Interp.invalidate_cache ();
+          raise (Outcome_exn (Timeout (text_of loc)))
+        in
+        match Memprof_limits.limit_with_token ~token (fun () -> Control.timeout remaining run ()) with
+        | Ok (Ok st') -> stop (); loop st'
+        | Ok (Error _) (* wall-clock timeout *) | Error _ (* token interrupt *) ->
+          stop (); timed_out ()
+        | exception e when CErrors.noncritical e -> stop (); on_error e
+      end
   in
   let out =
     try loop (Vernacstate.freeze_full_state ()) with Outcome_exn o -> o
