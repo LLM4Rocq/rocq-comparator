@@ -1,0 +1,7 @@
+{ "exit_code": 1,
+  "reason": "not_proved",
+  "detail_contains": "add_n_0",
+  "targets": [
+    { "name": "add_0_n", "status": "proved" },
+    { "name": "add_n_0", "status": "not_proved" }
+  ] }

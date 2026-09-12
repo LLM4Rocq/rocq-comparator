@@ -1,0 +1,3 @@
+{ "theorem_names": ["add_n_0"], "definition_names": ["large"],
+  "top": "Challenge", "timeout_s": 120, "rocqchk": false,
+  "note": "validate/dry-run: challenge only, no solution needed" }

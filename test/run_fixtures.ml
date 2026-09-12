@@ -158,6 +158,26 @@ let check_one ~exe ~dir ~name ~expected ~env ~label =
                      (Yojson.Safe.to_string want)))
          wanted
      | _ -> ());
+    (* optional per-target status assertions: [{"name":..,"status":..}, ..] *)
+    (match member "targets" expected with
+     | Some (`List wanted) ->
+       let got = match member "targets" j with Some (`List l) -> l | _ -> [] in
+       List.iter
+         (fun wt ->
+            match str "name" wt with
+            | None -> ()
+            | Some nm -> (
+              match List.find_opt (fun t -> str "name" t = Some nm) got with
+              | None -> add (Printf.sprintf "target %s missing from the verdict" nm)
+              | Some gt -> (
+                match str "status" wt with
+                | Some ws ->
+                  let gs = match str "status" gt with Some s -> s | None -> "" in
+                  if gs <> ws then
+                    add (Printf.sprintf "target %s: status=%s, expected %s" nm gs ws)
+                | None -> ())))
+         wanted
+     | _ -> ());
     let why = String.concat "; " (List.rev !problems) in
     { name = name ^ label; pass = why = ""; why }
 
@@ -165,7 +185,7 @@ let check_batch ~exe ~dir ~name ~expected sols =
   let cfg = Filename.concat dir "config.json" in
   let paths = List.map (fun s -> Filename.concat dir s) sols in
   let code, out, _err = run ([ exe; "batch"; cfg ] @ paths) in
-  let lines =
+  let all_lines =
     String.split_on_char '\n' out
     |> List.filter_map (fun l ->
         let l = String.trim l in
@@ -173,6 +193,12 @@ let check_batch ~exe ~dir ~name ~expected sols =
           match Yojson.Safe.from_string l with j -> Some j | exception _ -> None
         else None)
   in
+  (* batch prints a trailing tagged summary line ("summary":true) after the
+     per-solution lines; the per-solution assertions below run over the
+     solution lines only, and the summary is checked separately. *)
+  let is_summary j = member "summary" j = Some (`Bool true) in
+  let summary = List.find_opt is_summary all_lines in
+  let lines = List.filter (fun j -> not (is_summary j)) all_lines in
   let problems = ref [] in
   let add p = problems := p :: !problems in
   (match int_ "exit_code" expected with
@@ -195,8 +221,104 @@ let check_batch ~exe ~dir ~name ~expected sols =
               add (Printf.sprintf "solution %d: missing the \"solution\" field" i))
        wanted
    | _ -> ());
+  (* the trailing summary line must be present and its total must match *)
+  (match summary with
+   | None -> add "no trailing summary line"
+   | Some s ->
+     (match int_ "total" s with
+      | Some t when t <> List.length sols ->
+        add (Printf.sprintf "summary total %d, expected %d" t (List.length sols))
+      | _ -> ());
+     (match member "oks" expected with
+      | Some (`List wanted) ->
+        let want_ok = List.length (List.filter (function `Bool b -> b | _ -> false) wanted) in
+        (match int_ "ok" s with
+         | Some got when got <> want_ok ->
+           add (Printf.sprintf "summary ok=%d, expected %d" got want_ok)
+         | _ -> ())
+      | _ -> ()));
   let why = String.concat "; " (List.rev !problems) in
   { name; pass = why = ""; why }
+
+(* A fixture with {"validate": true, ...} in expected.json is run through the
+   `validate` subcommand (challenge only, no solution). Recognised keys:
+     exit_code                 (int)
+     v_ok                      (bool: the reported "ok")
+     error_contains            (string)
+     targets                   (list of {name, resolves?, kind?, type_contains?})
+     challenge_axioms_contains (list of fully qualified names) *)
+let check_validate ~exe ~dir ~name ~expected =
+  let cfg = Filename.concat dir "config.json" in
+  let code, out, err = run [ exe; "validate"; cfg ] in
+  match verdict_of_stdout out with
+  | None ->
+    { name; pass = false;
+      why = Printf.sprintf "no JSON on stdout (exit %d); stderr: %s" code (String.trim err) }
+  | Some j ->
+    let problems = ref [] in
+    let add p = problems := p :: !problems in
+    (match int_ "exit_code" expected with
+     | Some want when want <> code -> add (Printf.sprintf "exit code %d, expected %d" code want)
+     | _ -> ());
+    (match member "v_ok" expected with
+     | Some (`Bool want) ->
+       let got = match member "ok" j with Some (`Bool b) -> b | _ -> false in
+       if got <> want then add (Printf.sprintf "ok=%b, expected %b" got want)
+     | _ -> ());
+    (match str "error_contains" expected with
+     | Some needle ->
+       let d = match str "error" j with Some s -> s | None -> "" in
+       if not (contains ~needle d) then add (Printf.sprintf "error %S does not contain %S" d needle)
+     | None -> ());
+    let got_targets = match member "targets" j with Some (`List l) -> l | _ -> [] in
+    let find_target nm = List.find_opt (fun t -> str "name" t = Some nm) got_targets in
+    (match member "targets" expected with
+     | Some (`List wanted) ->
+       List.iter
+         (fun wt ->
+            match str "name" wt with
+            | None -> ()
+            | Some nm -> (
+              match find_target nm with
+              | None -> add (Printf.sprintf "target %s missing from validation output" nm)
+              | Some gt ->
+                (match member "resolves" wt with
+                 | Some (`Bool wb) ->
+                   let gb = match member "resolves" gt with Some (`Bool b) -> b | _ -> false in
+                   if gb <> wb then
+                     add (Printf.sprintf "target %s: resolves=%b, expected %b" nm gb wb)
+                 | _ -> ());
+                (match str "kind" wt with
+                 | Some wk ->
+                   let gk = match str "kind" gt with Some s -> s | None -> "" in
+                   if gk <> wk then add (Printf.sprintf "target %s: kind=%s, expected %s" nm gk wk)
+                 | None -> ());
+                (match str "type_contains" wt with
+                 | Some needle ->
+                   let ty = match str "type" gt with Some s -> s | None -> "" in
+                   if not (contains ~needle ty) then
+                     add (Printf.sprintf "target %s: type %S does not contain %S" nm ty needle)
+                 | None -> ())))
+         wanted
+     | _ -> ());
+    (match member "challenge_axioms_contains" expected with
+     | Some (`List wanted) ->
+       let got_ax =
+         match member "challenge_axioms" j with
+         | Some (`List l) -> List.filter_map (function `String s -> Some s | _ -> None) l
+         | _ -> []
+       in
+       List.iter
+         (function
+           | `String nm ->
+             if not (List.mem nm got_ax) then
+               add (Printf.sprintf "challenge axiom %s missing (got: %s)" nm
+                      (String.concat ", " got_ax))
+           | _ -> ())
+         wanted
+     | _ -> ());
+    let why = String.concat "; " (List.rev !problems) in
+    { name; pass = why = ""; why }
 
 let () =
   let exe = Sys.argv.(1) in
@@ -223,11 +345,14 @@ let () =
              | _ -> dir
            in
            let main =
-             match member "batch" expected with
-             | Some (`List l) ->
-               let sols = List.filter_map (function `String s -> Some s | _ -> None) l in
-               check_batch ~exe ~dir ~name ~expected sols
-             | _ -> check_one ~exe ~dir ~name ~expected ~env:[||] ~label:""
+             match member "validate" expected with
+             | Some (`Bool true) -> check_validate ~exe ~dir ~name ~expected
+             | _ -> (
+               match member "batch" expected with
+               | Some (`List l) ->
+                 let sols = List.filter_map (function `String s -> Some s | _ -> None) l in
+                 check_batch ~exe ~dir ~name ~expected sols
+               | _ -> check_one ~exe ~dir ~name ~expected ~env:[||] ~label:"")
            in
            let nofilter = Filename.concat dir "expected_nofilter.json" in
            if Sys.file_exists nofilter then
