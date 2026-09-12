@@ -78,11 +78,24 @@ let with_state (st : Vernacstate.t) (f : unit -> 'a) : 'a =
 
 (* --- compiling one library --- *)
 
+(* coqc reads .v files with [open_utf8_file_in], which skips a leading UTF-8
+   byte-order mark. We read the file as bytes (offsets must match the ones the
+   parser reports), so we strip the BOM ourselves: without this a solution
+   saved by a BOM-emitting editor is rejected as a parse error, which is a
+   verdict about the editor and not about the proof. *)
+let utf8_bom = "\xef\xbb\xbf"
+
+let strip_bom s =
+  let n = String.length utf8_bom in
+  if String.length s >= n && String.equal (String.sub s 0 n) utf8_bom then
+    String.sub s n (String.length s - n)
+  else s
+
 let read_file path =
   let ic = open_in_bin path in
   let s = really_input_string ic (in_channel_length ic) in
   close_in ic;
-  s
+  strip_bom s
 
 let sentence_text src bp ep =
   let n = String.length src in
@@ -107,6 +120,15 @@ let compile_library ?(filter = fun _ -> Result.Ok ())
     ?(deadline = infinity) ~(top : Names.DirPath.t) ~(file : string) () : outcome =
   clear_messages ();
   let src = read_file file in
+  (* [Vernacstate.unfreeze_full_state] restores the Interp half through
+     [do_if_not_cached], which skips the restore when the state it is asked
+     for is *physically* the one the cache last saw. The isolation between the
+     challenge and the solution rests entirely on this restore actually
+     happening, so we drop the cache first and pay one extra summary unfreeze
+     rather than trust a pointer comparison. (Flagged "do not use" in
+     vernacstate.mli, but it is the documented way to force a reset and is
+     used for the same purpose by coq-lsp and rocq-tools.) *)
+  Vernacstate.Interp.invalidate_cache ();
   Vernacstate.unfreeze_full_state (root ());
   Coqinit.start_library ~intern:Vernacinterp.fs_intern ~top (Coqargs.injection_commands (opts ()));
   let pa =

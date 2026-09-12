@@ -1,0 +1,3 @@
+{ "exit_code": 1, "reason": "statement_mismatch",
+  "detail_contains": "extra universe constraint",
+  "note": "DESIGN section 11 described this attack as the proof unifying the statement's universe with Set. On Rocq 9.2 that exact form is unreachable: every fresh monomorphic Type level (including one introduced by `Universe u.`) is declared STRICTLY above Set, so `u <= Set` is rejected by the kernel as an inconsistency before the comparator ever sees it. The realisable form of the same weakening is an upper bound by a GLOBAL level of a loaded library, which is what this fixture does." }

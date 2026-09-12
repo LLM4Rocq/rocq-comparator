@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "dependency_mismatch", "detail_contains": "Challenge.helper",
+  "note": "The attack that permitting the challenge's own axioms would open if they were not pinned: the solution keeps the NAME helper but gives it a different statement (2 + 2 = 4 instead of 1 + 1 = 2), so 'Challenge.helper is permitted' would no longer mean what the challenge said. Every challenge axiom is compared by type against the challenge's declaration, so this is rejected." }

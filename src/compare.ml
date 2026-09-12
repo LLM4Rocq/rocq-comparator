@@ -189,6 +189,153 @@ let eq_mind ~top ~ren (m1 : Declarations.mutual_inductive_body)
   && eq_safety_flags m1.Declarations.mind_typing_flags m2.Declarations.mind_typing_flags
   && Array.for_all2 (eq_one_ind ~top ~ren) m1.Declarations.mind_packets m2.Declarations.mind_packets
 
+(* --- user names vs canonical names --- *)
+
+(* [Environ.lookup_constant] is keyed by the USER kernel name (Cmap_env is
+   built on Constant.UserOrd), while terms compare constants by their
+   CANONICAL name (Constr's comparison uses Constant.CanOrd) -- and the kernel
+   object a name denotes is the canonical one. [Include] and module aliases
+   create a constant whose user name is the one the challenge used but whose
+   canonical name is some M.f: looking it up by user name in the solution
+   silently hands us a *different* kernel object, so every equality we then
+   check is about the wrong constant.
+
+   After each lookup we therefore re-resolve the user name through the
+   solution's own delta resolver ([Global.constant_of_delta_kn]) and require
+   the canonical names to agree. *)
+
+let canonical_alias_const (c : Constant.t) : string option =
+  match Global.constant_of_delta_kn (Constant.user c) with
+  | c' when Constant.CanOrd.equal c c' -> None
+  | c' -> Some (KerName.to_string (Constant.canonical c'))
+  | exception _ ->
+    (* no resolver entry at all: treat it as "cannot be shown to be the same
+       object" rather than as success *)
+    Some "an unresolvable kernel name"
+
+let canonical_alias_mind (m : MutInd.t) : string option =
+  match Global.mind_of_delta_kn (MutInd.user m) with
+  | m' when MutInd.CanOrd.equal m m' -> None
+  | m' -> Some (KerName.to_string (MutInd.canonical m'))
+  | exception _ -> Some "an unresolvable kernel name"
+
+let alias_detail name canonical =
+  name ^ " is an alias of " ^ canonical ^ " in the solution"
+
+(* --- universe entailment --------------------------------------------------
+
+   Comparing the statements up to the level bijection [ren] is not enough: the
+   solution can keep the statement's levels and instead add *constraints* on
+   them, which proves a strictly weaker theorem. The textbook case is a
+   monomorphic [Theorem foo : forall (A : Type@{u}), ...] whose proof quietly
+   unifies [u] with [Set] -- afterwards [foo] only holds for Set-sized types,
+   and nothing in the term comparison notices.
+
+   The constraint the solution adds need not relate two levels of the library:
+   it can relate a statement level to a level of a Required library, or go
+   through a level the solution alone introduced. So the check is done on the
+   universe graph rather than pairwise over the local levels: from every
+   mapped level we walk the solution graph forwards and backwards, and every
+   constraint we reach -- expressed in challenge-side names -- must already
+   hold in the challenge graph. Levels the solution alone introduced are
+   pass-through nodes (no name on the challenge side, but paths may cross
+   them). Each walk visits a node at most twice (once non-strict, once
+   strict), so the whole check is linear in the graph. *)
+
+type adjacency = (Univ.Level.t * bool) list Univ.Level.Map.t
+
+let add_edge (m : adjacency) (u : Univ.Level.t) (e : Univ.Level.t * bool) =
+  let cur = match Univ.Level.Map.find_opt u m with Some l -> l | None -> [] in
+  Univ.Level.Map.add u (e :: cur) m
+
+(* forward ("u <= v" / "u < v") and backward adjacency of a universe graph.
+   An [Alias] node is an equality, hence an edge in both directions. *)
+let adjacencies (g : UGraph.t) : adjacency * adjacency =
+  Univ.Level.Map.fold
+    (fun u node acc ->
+       match node with
+       | UGraph.Alias v ->
+         let fwd, bwd = acc in
+         let fwd = add_edge (add_edge fwd u (v, false)) v (u, false) in
+         let bwd = add_edge (add_edge bwd u (v, false)) v (u, false) in
+         (fwd, bwd)
+       | UGraph.Node succ ->
+         Univ.Level.Map.fold
+           (fun v strict (fwd, bwd) -> (add_edge fwd u (v, strict), add_edge bwd v (u, strict)))
+           succ acc)
+    (UGraph.repr g)
+    (Univ.Level.Map.empty, Univ.Level.Map.empty)
+
+let succs (adj : adjacency) (u : Univ.Level.t) =
+  match Univ.Level.Map.find_opt u adj with Some l -> l | None -> []
+
+(* levels reachable from [start] (excluding [start] itself unless a cycle
+   leads back to it), mapped to "some path to it used a strict edge". *)
+let reachable (adj : adjacency) (start : Univ.Level.t) : bool Univ.Level.Map.t =
+  let push strict l acc =
+    List.fold_left (fun acc (v, st) -> (v, strict || st) :: acc) acc (succs adj l)
+  in
+  (* An explicit worklist, not recursion: the solution decides the shape of
+     this graph, and a judge must not be killable with a deep chain of
+     universes. A node is re-entered only when a strict path reaches one that
+     so far was only reachable non-strictly, so each is expanded at most
+     twice. *)
+  let rec loop seen = function
+    | [] -> seen
+    | (l, strict) :: tl ->
+      let skip =
+        match Univ.Level.Map.find_opt l seen with
+        | Some seen_strict -> seen_strict || not strict
+        | None -> false
+      in
+      if skip then loop seen tl
+      else loop (Univ.Level.Map.add l strict seen) (push strict l tl)
+  in
+  loop Univ.Level.Map.empty (push false start [])
+
+(* [report lo op hi] is called, with challenge-side level names, for every
+   constraint the solution's graph has and the challenge's has not. *)
+let check_universe_entailment ~(top : DirPath.t) ~(ren : (Univ.Level.t * Univ.Level.t) list)
+    ~(challenge : UGraph.t) ~(solution : UGraph.t)
+    (report : Univ.Level.t -> string -> Univ.Level.t -> unit) : unit =
+  match ren with
+  | [] -> () (* no level of the statement is library-local: nothing to entail *)
+  | _ :: _ ->
+    let fwd, bwd = adjacencies solution in
+    let known = UGraph.domain challenge in
+    (* solution level -> the name it has in the challenge, if any *)
+    let to_challenge (w : Univ.Level.t) : Univ.Level.t option =
+      if local_level ~top w then
+        match List.find_opt (fun (_, b) -> Univ.Level.equal b w) ren with
+        | Some (a, _) -> Some a
+        | None -> None (* a level the solution alone introduced: pass through *)
+      else Some w (* Set, Prop and the levels of Required libraries keep their name *)
+    in
+    let entailed ~strict (a : Univ.Level.t) (b : Univ.Level.t) =
+      Univ.Level.Set.mem a known && Univ.Level.Set.mem b known
+      &&
+      let ua = Univ.Universe.make a and ub = Univ.Universe.make b in
+      UGraph.check_leq challenge (if strict then Univ.Universe.super ua else ua) ub
+    in
+    List.iter
+      (fun (a, a') ->
+         let walk adj (order : Univ.Level.t -> Univ.Level.t -> Univ.Level.t * Univ.Level.t) =
+           Univ.Level.Map.iter
+             (fun w strict ->
+                match to_challenge w with
+                | None -> ()
+                | Some wc ->
+                  if not (Univ.Level.equal wc a) then begin
+                    let lo, hi = order a wc in
+                    if not (entailed ~strict:false lo hi) then report lo "<=" hi
+                    else if strict && not (entailed ~strict:true lo hi) then report lo "<" hi
+                  end)
+             (reachable adj a')
+         in
+         walk fwd (fun a wc -> (a, wc));
+         walk bwd (fun a wc -> (wc, a)))
+      ren
+
 (* --- the check --- *)
 
 let unchecked name = { Verdict.name; status = "unchecked"; assumptions = []; target_detail = None }
@@ -200,6 +347,13 @@ let check_targets (spec : Spec.t) (env_s : Environ.env) :
   (* A target is compared as a target (statement + universes only): never
      compare its body, and for a definition hole never compare its kind. *)
   let is_target c = List.exists (Constant.CanOrd.equal c) target_kns in
+  (* A constant the challenge itself declares without a body is allowed to
+     change kind in the solution (proving it is strictly stronger than leaning
+     on it), so its kind and body are not compared -- everything else about it
+     still is. *)
+  let is_challenge_axiom c =
+    List.exists (fun (a, _) -> Constant.CanOrd.equal c a) spec.Spec.challenge_axioms
+  in
   let ren : ren = ref [] in
   let error = ref None in
   let set r d = match !error with Some _ -> () | None -> error := Some (r, d) in
@@ -211,38 +365,49 @@ let check_targets (spec : Spec.t) (env_s : Environ.env) :
            set Verdict.Target_not_found (t.Spec.name ^ ": not defined in the solution");
            { (unchecked t.Spec.name) with status = "missing" }
          | Some cb -> (
-           match cb.Declarations.const_body with
-           | Declarations.Undef _ ->
-             set Verdict.Not_proved (t.Spec.name ^ ": admitted (no proof term)");
-             { (unchecked t.Spec.name) with status = "not_proved" }
-           | Declarations.Symbol _ | Declarations.Primitive _ ->
-             set Verdict.Kind_mismatch (t.Spec.name ^ ": declared as a symbol or primitive");
-             { (unchecked t.Spec.name) with status = "kind_mismatch" }
-           | Declarations.Def _ | Declarations.OpaqueDef _ ->
-             if not (eq_constr_mod_univ ~top ~ren t.Spec.typ cb.Declarations.const_type) then begin
-               set Verdict.Statement_mismatch
-                 (t.Spec.name ^ ": the solution's statement differs from the challenge's");
-               { (unchecked t.Spec.name) with status = "mismatch";
-                 target_detail = Some "type differs from the challenge" }
-             end
-             else if not (eq_univs t.Spec.univs cb.Declarations.const_universes) then begin
-               set Verdict.Statement_mismatch (t.Spec.name ^ ": universe declaration differs");
-               { (unchecked t.Spec.name) with status = "mismatch";
-                 target_detail = Some "universe declaration differs" }
-             end
-             else { (unchecked t.Spec.name) with status = "proved" }))
+           match canonical_alias_const t.Spec.kn with
+           | Some canon ->
+             let d = alias_detail t.Spec.name canon in
+             set Verdict.Statement_mismatch d;
+             { (unchecked t.Spec.name) with status = "mismatch"; target_detail = Some d }
+           | None -> (
+             match cb.Declarations.const_body with
+             | Declarations.Undef _ ->
+               set Verdict.Not_proved (t.Spec.name ^ ": admitted (no proof term)");
+               { (unchecked t.Spec.name) with status = "not_proved" }
+             | Declarations.Symbol _ | Declarations.Primitive _ ->
+               set Verdict.Kind_mismatch (t.Spec.name ^ ": declared as a symbol or primitive");
+               { (unchecked t.Spec.name) with status = "kind_mismatch" }
+             | Declarations.Def _ | Declarations.OpaqueDef _ ->
+               if not (eq_constr_mod_univ ~top ~ren t.Spec.typ cb.Declarations.const_type) then begin
+                 set Verdict.Statement_mismatch
+                   (t.Spec.name ^ ": the solution's statement differs from the challenge's");
+                 { (unchecked t.Spec.name) with status = "mismatch";
+                   target_detail = Some "type differs from the challenge" }
+               end
+               else if not (eq_univs t.Spec.univs cb.Declarations.const_universes) then begin
+                 set Verdict.Statement_mismatch (t.Spec.name ^ ": universe declaration differs");
+                 { (unchecked t.Spec.name) with status = "mismatch";
+                   target_detail = Some "universe declaration differs" }
+               end
+               else { (unchecked t.Spec.name) with status = "proved" })))
       spec.Spec.targets
   in
   (* dependency closure *)
   let check_const ~local (e : Spec.const_entry) =
     if is_target e.Spec.c then ()
     else
+    let axiom = is_challenge_axiom e.Spec.c in
     match Environ.lookup_constant_opt e.Spec.c env_s with
     | None ->
       set Verdict.Dependency_mismatch
         (Constant.to_string e.Spec.c ^ ": missing from the solution environment")
     | Some cb ->
-      if not (same_kind e.Spec.cb cb) then
+      match canonical_alias_const e.Spec.c with
+      | Some canon ->
+        set Verdict.Dependency_mismatch (alias_detail (Constant.to_string e.Spec.c) canon)
+      | None ->
+      if (not axiom) && not (same_kind e.Spec.cb cb) then
         set Verdict.Dependency_mismatch
           (Constant.to_string e.Spec.c ^ ": kind differs (" ^ kind_name e.Spec.cb ^ " vs "
            ^ kind_name cb ^ ")")
@@ -258,6 +423,9 @@ let check_targets (spec : Spec.t) (env_s : Environ.env) :
                         cb.Declarations.const_typing_flags) then
         set Verdict.Unsafe_flags
           (Constant.to_string e.Spec.c ^ ": typing flags differ from the challenge's")
+      else if axiom then
+        (* the kind rule for a challenge axiom, checked once, below *)
+        ()
       else
         match (e.Spec.body, Spec.force_body cb) with
         | None, None -> ()
@@ -273,10 +441,14 @@ let check_targets (spec : Spec.t) (env_s : Environ.env) :
     | exception Not_found ->
       set Verdict.Dependency_mismatch
         (MutInd.to_string e.Spec.m ^ ": missing from the solution environment")
-    | mb ->
-      if not (eq_mind ~top ~ren e.Spec.mb mb) then
-        set Verdict.Dependency_mismatch
-          (MutInd.to_string e.Spec.m ^ ": inductive declaration differs from the challenge's")
+    | mb -> (
+      match canonical_alias_mind e.Spec.m with
+      | Some canon ->
+        set Verdict.Dependency_mismatch (alias_detail (MutInd.to_string e.Spec.m) canon)
+      | None ->
+        if not (eq_mind ~top ~ren e.Spec.mb mb) then
+          set Verdict.Dependency_mismatch
+            (MutInd.to_string e.Spec.m ^ ": inductive declaration differs from the challenge's"))
   in
   List.iter (check_const ~local:true) spec.Spec.local_consts;
   List.iter (check_ind ~local:true) spec.Spec.local_inds;
@@ -288,47 +460,57 @@ let check_targets (spec : Spec.t) (env_s : Environ.env) :
        match Environ.lookup_constant_opt c env_s with
        | None -> ()
        | Some cb -> (
-         match cb.Declarations.const_body with
-         | Declarations.Undef _ ->
-           if not (eq_constr_mod_univ ~top ~ren ty cb.Declarations.const_type) then
+         match canonical_alias_const c with
+         | Some canon ->
+           set Verdict.Dependency_mismatch (alias_detail (Constant.to_string c) canon)
+         | None -> (
+           match cb.Declarations.const_body with
+           | Declarations.Undef _ ->
+             if not (eq_constr_mod_univ ~top ~ren ty cb.Declarations.const_type) then
+               set Verdict.Dependency_mismatch
+                 (Constant.to_string c ^ ": permitted axiom restated differently")
+           | Declarations.Def _ | Declarations.OpaqueDef _ | Declarations.Primitive _
+           | Declarations.Symbol _ ->
              set Verdict.Dependency_mismatch
-               (Constant.to_string c ^ ": permitted axiom restated differently")
-         | _ ->
-           set Verdict.Dependency_mismatch
-             (Constant.to_string c ^ ": permitted axiom redefined in the solution")))
+               (Constant.to_string c ^ ": permitted axiom redefined in the solution"))))
     spec.Spec.permitted_present;
-  (* constraint entailment on the local levels: the solution may not have
-     proved the statement under stronger universe constraints *)
-  let gs = Global.universes () in
-  let pairs = !ren in
-  let levels = Univ.Level.set :: List.map fst pairs in
-  let sol_of l =
-    if Univ.Level.is_set l then Some Univ.Level.set
-    else match List.find_opt (fun (a, _) -> Univ.Level.equal a l) pairs with
-      | Some (_, b) -> Some b
-      | None -> None
-  in
+  (* The challenge's own axioms and admitted helpers: the solution must keep
+     the *statement* the challenge gave them, but -- unlike a permitted axiom
+     from the config -- it may discharge one, so Def and OpaqueDef are fine
+     next to Undef. Anything else (a primitive, a rewrite rule symbol, or a
+     constant that disappeared) is not. *)
   List.iter
-    (fun a ->
-       List.iter
-         (fun b ->
-            if not (Univ.Level.equal a b) then
-              match (sol_of a, sol_of b) with
-              | Some a', Some b' ->
-                let ua = Univ.Universe.make a and ub = Univ.Universe.make b in
-                let ua' = Univ.Universe.make a' and ub' = Univ.Universe.make b' in
-                if UGraph.check_leq gs ua' ub' && not (UGraph.check_leq spec.Spec.graph ua ub) then
-                  set Verdict.Statement_mismatch
-                    ("the solution needs the extra universe constraint "
-                     ^ Univ.Level.to_string a ^ " <= " ^ Univ.Level.to_string b);
-                if UGraph.check_leq gs (Univ.Universe.super ua') ub'
-                && not (UGraph.check_leq spec.Spec.graph (Univ.Universe.super ua) ub) then
-                  set Verdict.Statement_mismatch
-                    ("the solution needs the extra universe constraint "
-                     ^ Univ.Level.to_string a ^ " < " ^ Univ.Level.to_string b)
-              | _ -> ())
-         levels)
-    levels;
+    (fun (c, ty) ->
+       match Environ.lookup_constant_opt c env_s with
+       | None ->
+         set Verdict.Dependency_mismatch
+           (Constant.to_string c ^ ": the challenge declares it, the solution does not")
+       | Some cb -> (
+         match canonical_alias_const c with
+         | Some canon ->
+           set Verdict.Dependency_mismatch (alias_detail (Constant.to_string c) canon)
+         | None -> (
+           match cb.Declarations.const_body with
+           | Declarations.Undef _ | Declarations.Def _ | Declarations.OpaqueDef _ ->
+             (* the typing flags of every local constant are checked wholesale
+                by Envcheck, so only the statement matters here *)
+             if not (eq_constr_mod_univ ~top ~ren ty cb.Declarations.const_type) then
+               set Verdict.Dependency_mismatch
+                 (Constant.to_string c
+                  ^ ": the solution gives the challenge's assumption a different statement")
+           | Declarations.Primitive _ | Declarations.Symbol _ ->
+             set Verdict.Dependency_mismatch
+               (Constant.to_string c
+                ^ ": the solution turns the challenge's assumption into a primitive or symbol"))))
+    spec.Spec.challenge_axioms;
+  (* the solution may not have proved the statement under extra universe
+     constraints (see check_universe_entailment above) *)
+  check_universe_entailment ~top ~ren:!ren ~challenge:spec.Spec.graph
+    ~solution:(Global.universes ())
+    (fun a op b ->
+       set Verdict.Statement_mismatch
+         ("the solution needs the extra universe constraint " ^ Univ.Level.to_string a ^ " " ^ op
+          ^ " " ^ Univ.Level.to_string b));
   (reports, !error)
 
 let check (spec : Spec.t) (env_s : Environ.env) :
