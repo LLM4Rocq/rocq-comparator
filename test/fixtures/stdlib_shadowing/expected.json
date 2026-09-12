@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "library_violation",
+  "note": "The Collatz cheat from talks/2026_caia/collatz: a fake Stdlib/Arith.v (nat has a single constructor) shadows the real standard library through -Q . \"\". With the attacker's project on the load path both the challenge and the solution see the fake, so only the shadowing check (installed namespaces must come from the switch) can reject it. The runner compiles the files listed in config.prebuild with rocq -Q . \"\" in a scratch copy before running the comparator." }

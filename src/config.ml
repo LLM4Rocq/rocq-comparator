@@ -65,6 +65,11 @@ let parse_coqproject ~dir (text : string) : loadpath_entry list =
     |> List.concat_map (fun l -> String.split_on_char ' ' l)
     |> List.concat_map (String.split_on_char '\t')
     |> List.filter (fun s -> s <> "")
+    (* coq_makefile accepts quoted arguments: -Q . "" is the usual spelling
+       of the empty logical name *)
+    |> List.map (fun s ->
+        let n = String.length s in
+        if n >= 2 && s.[0] = '"' && s.[n - 1] = '"' then String.sub s 1 (n - 2) else s)
   in
   let rec go acc = function
     | "-Q" :: d :: l :: tl -> go (Q (absolute ~dir d, l) :: acc) tl

@@ -1,0 +1,2 @@
+{ "theorem_names": ["collatz"], "timeout_s": 120, "sandbox": "none", "rocqchk": false,
+  "coqproject": "_CoqProject", "prebuild": ["Stdlib/Arith.v"] }
