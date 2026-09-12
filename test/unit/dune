@@ -1,0 +1,9 @@
+(test
+ (name unit)
+ (libraries
+  alcotest
+  rocq_comparator
+  rocq-runtime.clib
+  rocq-runtime.lib
+  rocq-runtime.kernel
+  rocq-runtime.vernac))

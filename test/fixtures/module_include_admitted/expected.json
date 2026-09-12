@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "forbidden_axiom", "detail_contains": "Challenge.M0.absurd",
+  "note": "DESIGN section 11 predicted not_proved. In Rocq 9.2 `Include M0` re-declares absurd as an alias *definition* whose body is M0.absurd, so the target is Def and the admitted proof is caught one level down, by the axiom check. The rejection is strictly more informative (it names the culprit); the DESIGN row was wrong about Include's kernel semantics." }

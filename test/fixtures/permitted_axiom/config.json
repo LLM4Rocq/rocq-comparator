@@ -1,0 +1,2 @@
+{ "theorem_names": ["em"], "top": "Challenge", "timeout_s": 120,
+  "permitted_axioms": ["Stdlib.Logic.Classical_Prop.classic"] }

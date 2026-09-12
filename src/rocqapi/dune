@@ -1,0 +1,11 @@
+(library
+ (name rocq_comparator_rocqapi)
+ (wrapped false)
+ (libraries
+  rocq-runtime.clib
+  rocq-runtime.lib
+  rocq-runtime.kernel
+  rocq-runtime.library
+  rocq-runtime.engine
+  rocq-runtime.printing
+  rocq-runtime.vernac))

@@ -1,0 +1,13 @@
+(executable
+ (name run_fixtures)
+ (modules run_fixtures)
+ (libraries yojson unix))
+
+(rule
+ (alias runtest)
+ (deps
+  (source_tree fixtures)
+  %{exe:../bin/main.exe}
+  run_fixtures.exe)
+ (action
+  (run ./run_fixtures.exe %{exe:../bin/main.exe} fixtures)))

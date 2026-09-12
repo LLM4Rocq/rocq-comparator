@@ -1,0 +1,5 @@
+{ "theorem_names": ["zero_lt_one"], "top": "Challenge", "timeout_s": 300,
+  "permitted_axioms": [
+    "Stdlib.Reals.ClassicalDedekindReals.*",
+    "Stdlib.Logic.FunctionalExtensionality.*"
+  ] }

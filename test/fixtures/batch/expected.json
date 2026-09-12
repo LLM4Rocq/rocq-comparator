@@ -1,0 +1,1 @@
+{ "batch": ["Sol_ok1.v", "Sol_bad.v", "Sol_ok2.v"], "exit_code": 0, "oks": [true, false, true] }

@@ -5,6 +5,7 @@
   str
   threads.posix
   yojson
+  rocq_comparator_rocqapi
   memprof-limits
   rocq-runtime.boot
   rocq-runtime.clib

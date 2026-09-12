@@ -227,3 +227,34 @@ val run_inner : hooks -> Config.t -> scratch:string -> Verdict.t
 
 Subcommands `check`, `batch`, `sandbox-info`; outer/inner re-exec; JSONL
 batch with a forked child per solution.
+
+## Implementation notes (integration)
+
+The interfaces above were implemented as specified, with three deliberate
+deviations, all additive:
+
+1. **`src/rocqapi/` (library `rocq_comparator_rocqapi`, module
+   `Kernel_assumptions`).** Our `Assumptions` module would shadow Rocq's
+   `Assumptions` inside the wrapped `rocq_comparator` library (dune opens the
+   alias module in every unit), so the one call to
+   `Assumptions.assumptions` lives in a tiny separate unwrapped library.
+   `Assumptions.of_constant` has exactly the contracted signature.
+
+2. **`Compare.check_targets`** — `Spec.t -> Environ.env -> target_report list
+   * (reason * string) option` — is the function the pipeline actually uses,
+   so that per-target statuses are reported even when the comparison fails.
+   `Compare.check` is defined in terms of it and keeps the contracted type.
+
+3. **Targets are excluded from the closure comparison.** A target constant
+   reachable from another target's statement must not have its *body*
+   compared (the whole point is that the solution supplies a different proof),
+   and a definition hole must not have its *kind* compared (`Undef` in the
+   challenge, `Def` in the solution). Both are checked as targets instead,
+   which is what DESIGN section 5 asks for.
+
+`bin/main.ml` honours `ROCQ_COMPARATOR_NO_FILTER=1` as a **test-only** escape
+hatch: the solution is then run through the lenient filter, so the fixture
+suite can show that the kernel-level checks reject `#[bypass_check(guard)]`
+and `Unset Guard Checking` on their own (`unsafe_flags`) even when the AST
+filter is out of the way. It prints a warning on stderr and must never be set
+in production.
