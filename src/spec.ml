@@ -31,6 +31,13 @@ type t = {
   external_inds : ind_entry list;
   graph : UGraph.t;
   permitted_present : (Constant.t * Constr.t) list;
+  challenge_axioms : (Constant.t * Constr.t) list;
+      (** Constants the *challenge* declares without a body (Parameter, Axiom,
+          a helper lemma left Admitted) and which are not themselves targets.
+          A signature-style challenge is built out of these, so its own
+          declarations must be usable by the solution; they are pinned (same
+          type, still an assumption or an honest proof of it) and permitted as
+          assumptions. Empty when [~permit_challenge_axioms:false]. *)
 }
 
 let is_local ~(top : DirPath.t) (mp : ModPath.t) =
@@ -126,13 +133,24 @@ let closure_of ~(top : DirPath.t) (roots : Constr.t list) =
   drain ();
   (List.rev !local_c, List.rev !local_i, List.rev !ext_c, List.rev !ext_i)
 
+(* [Nametab.locate] resolves *true* global references only.
+   [Smartlocate.global_with_alias] additionally follows abbreviations
+   ("Notation foo := bar"), so a solution could satisfy the target name [foo]
+   without ever declaring a constant called [foo] -- the comparison would then
+   be about [bar]. A target must name a kernel constant, so we resolve it the
+   strict way. *)
+let locate_global (s : string) : GlobRef.t option =
+  match Nametab.locate (Libnames.qualid_of_string s) with
+  | gr -> Some gr
+  | exception _ -> None
+
 let resolve_name ~(top : DirPath.t) (name : string) : (Constant.t, string) result =
   let try_one s =
-    match Smartlocate.global_with_alias (Libnames.qualid_of_string s) with
-    | GlobRef.ConstRef c -> Some (Result.Ok c)
-    | GlobRef.IndRef _ | GlobRef.ConstructRef _ | GlobRef.VarRef _ ->
+    match locate_global s with
+    | Some (GlobRef.ConstRef c) -> Some (Result.Ok c)
+    | Some (GlobRef.IndRef _ | GlobRef.ConstructRef _ | GlobRef.VarRef _) ->
       Some (Result.Error (s ^ " is not a constant"))
-    | exception _ -> None
+    | None -> None
   in
   let qualified = DirPath.to_string top ^ "." ^ name in
   match try_one name with
@@ -142,9 +160,24 @@ let resolve_name ~(top : DirPath.t) (name : string) : (Constant.t, string) resul
     | Some r -> r
     | None -> Result.Error ("target " ^ name ^ " not found in the challenge"))
 
+(* Every local constant of the challenge that has no body and is not a target:
+   the axioms and admitted helpers the challenge itself is built out of. *)
+let collect_challenge_axioms ~(top : DirPath.t) (env : Environ.env)
+    (targets : target list) : (Constant.t * Constr.t) list =
+  let is_target c = List.exists (fun t -> Constant.CanOrd.equal t.kn c) targets in
+  Environ.fold_constants
+    (fun c (cb : Declarations.constant_body) acc ->
+       match cb.Declarations.const_body with
+       | Declarations.Undef _
+         when is_local ~top (Constant.modpath c) && not (is_target c) ->
+         (c, cb.Declarations.const_type) :: acc
+       | Declarations.Undef _ | Declarations.Def _ | Declarations.OpaqueDef _
+       | Declarations.Primitive _ | Declarations.Symbol _ -> acc)
+    env []
+
 let extract ~(top : DirPath.t) ~(theorem_names : string list)
-    ~(definition_names : string list) ~(permitted_axioms : string list) :
-  (t, Verdict.reason * string) result =
+    ~(definition_names : string list) ~(permitted_axioms : string list)
+    ~(permit_challenge_axioms : bool) : (t, Verdict.reason * string) result =
   let env = Global.env () in
   let rec resolve acc = function
     | [] -> Result.Ok (List.rev acc)
@@ -179,17 +212,25 @@ let extract ~(top : DirPath.t) ~(theorem_names : string list)
         (fun a ->
            if String.length a > 2 && String.sub a (String.length a - 2) 2 = ".*" then None
            else
-             match Smartlocate.global_with_alias (Libnames.qualid_of_string a) with
-             | GlobRef.ConstRef c -> (
+             (* strict resolution again: an abbreviation must not be able to
+                turn a permitted-axiom name into some other constant *)
+             match locate_global a with
+             | Some (GlobRef.ConstRef c) -> (
                match Environ.lookup_constant_opt c env with
                | Some cb -> Some (c, cb.Declarations.const_type)
                | None -> None)
-             | _ -> None
-             | exception _ -> None)
+             | Some _ | None -> None)
         permitted_axioms
     in
+    let challenge_axioms =
+      if permit_challenge_axioms then collect_challenge_axioms ~top env targets else []
+    in
+    (* The challenge's own axioms are part of the specification, so their
+       statements go into the closure too: the solution may not restate them. *)
     let roots =
-      List.map (fun t -> t.typ) targets @ List.map snd permitted_present
+      List.map (fun t -> t.typ) targets
+      @ List.map snd permitted_present
+      @ List.map snd challenge_axioms
     in
     match closure_of ~top roots with
     | exception Section_variable id ->
@@ -199,4 +240,4 @@ let extract ~(top : DirPath.t) ~(theorem_names : string list)
     | local_consts, local_inds, external_consts, external_inds ->
       Result.Ok
         { top; targets; local_consts; local_inds; external_consts; external_inds;
-          graph = Global.universes (); permitted_present })
+          graph = Global.universes (); permitted_present; challenge_axioms })

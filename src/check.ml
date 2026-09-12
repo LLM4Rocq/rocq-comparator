@@ -72,6 +72,16 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
   in
   let with_version (v : Verdict.t) = { v with Verdict.rocq_version = Driver.rocq_version () } in
   let deadline = Unix.gettimeofday () +. cfg.Config.timeout_s in
+  (* A signature-style challenge ("Parameter P : Prop.", "Axiom ax : ...",
+     "Lemma helper : X. Admitted.") is part of the specification: the target's
+     statement and proof are meant to rest on those declarations, so they are
+     permitted assumptions and are pinned in the solution (same statement, and
+     either still assumed or honestly proved). The challenge is trusted input,
+     which is what makes this safe; a challenge that wants the strict
+     behaviour turns it off. The config field "permit_challenge_axioms" that
+     drives this is wired by the integrator (Config.t does not carry it yet);
+     until then the default stands here. *)
+  let permit_challenge_axioms = true in
   Hashtbl.replace checks "filter" h.filter_status;
   try
     (* 1. init *)
@@ -111,7 +121,7 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
       match
         Spec.extract ~top ~theorem_names:cfg.Config.theorem_names
           ~definition_names:cfg.Config.definition_names
-          ~permitted_axioms:cfg.Config.permitted_axioms
+          ~permitted_axioms:cfg.Config.permitted_axioms ~permit_challenge_axioms
       with
       | Result.Error (r, d) -> with_version (finish r d)
       | Result.Ok spec -> (
@@ -169,7 +179,17 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
                      else None)
                   spec.Spec.targets
               in
-              match h.assumptions ~permitted:cfg.Config.permitted_axioms proved reports with
+              (* Assumptions matches names by CANONICAL kernel name, so that
+                 is the spelling the challenge's own axioms must be added
+                 under: a constant reached through an alias is still the same
+                 kernel object and must be recognised as permitted. *)
+              let permitted =
+                cfg.Config.permitted_axioms
+                @ List.map
+                    (fun (c, _) -> KerName.to_string (Constant.canonical c))
+                    spec.Spec.challenge_axioms
+              in
+              match h.assumptions ~permitted proved reports with
               | Result.Error (r, d, reports) ->
                 Hashtbl.replace checks "axioms" (Verdict.Fail d);
                 with_version (finish ~targets:reports r d)

@@ -58,6 +58,109 @@ let t_structure () =
   Alcotest.(check bool) "SProp is SProp" true
     (eq (fresh ()) (Constr.mkSort Sorts.sprop) (Constr.mkSort Sorts.sprop))
 
+(* --- universe entailment ---------------------------------------------- *)
+
+(* [a] and [b] are levels of the library under comparison (they get renamed),
+   [g] belongs to a Required library (same name on both sides), [v] exists
+   only in the solution. Graphs are built by hand so the check can be exercised
+   without compiling anything. *)
+
+let a_c = lvl top 1
+let b_c = lvl top 2
+let a_s = lvl top 11
+let b_s = lvl top 12
+let v_s = lvl top 13
+let g = lvl other 5
+
+let graph ~levels ~constraints =
+  let u =
+    List.fold_left (fun u l -> UGraph.add_universe l ~strict:true u) UGraph.initial_universes levels
+  in
+  List.fold_left (fun u c -> UGraph.enforce_constraint c u) u constraints
+
+let entailment ~challenge ~solution =
+  let found = ref [] in
+  RC.Compare.check_universe_entailment ~top
+    ~ren:[ (a_c, a_s); (b_c, b_s) ]
+    ~challenge ~solution
+    (fun x op y ->
+       found := Printf.sprintf "%s %s %s" (Univ.Level.to_string x) op (Univ.Level.to_string y)
+                :: !found);
+  (* a constraint between two mapped levels is found twice, once walking
+     forwards from the lower one and once walking backwards from the upper
+     one; the pipeline keeps the first failure, so only the set matters *)
+  List.sort_uniq String.compare !found
+
+let cname l = Univ.Level.to_string l
+
+let t_univ_no_extra () =
+  let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[ (a_c, Univ.UnivConstraint.Le, g) ] in
+  let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Le, g) ] in
+  Alcotest.(check (list string)) "a constraint the challenge already has is fine" []
+    (entailment ~challenge ~solution)
+
+let t_univ_global_bound () =
+  (* the MAJOR finding: the extra constraint relates a local level to a GLOBAL
+     one, so a pairwise check over the local levels alone cannot see it *)
+  let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[] in
+  let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Le, g) ] in
+  Alcotest.(check (list string)) "an extra upper bound by a library level is reported"
+    [ cname a_c ^ " <= " ^ cname g ]
+    (entailment ~challenge ~solution)
+
+let t_univ_strict () =
+  let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[ (a_c, Univ.UnivConstraint.Le, g) ] in
+  let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Lt, g) ] in
+  Alcotest.(check (list string)) "<= entailed but < is not" [ cname a_c ^ " < " ^ cname g ]
+    (entailment ~challenge ~solution)
+
+let t_univ_backward () =
+  let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[] in
+  let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (g, Univ.UnivConstraint.Le, a_s) ] in
+  Alcotest.(check (list string)) "a lower bound is reported too"
+    [ cname g ^ " <= " ^ cname a_c ]
+    (entailment ~challenge ~solution)
+
+let t_univ_passthrough () =
+  (* a level the solution alone introduced carries no name on the challenge
+     side, but a path through it still constrains two mapped levels *)
+  let challenge = graph ~levels:[ a_c; b_c ] ~constraints:[] in
+  let solution =
+    graph ~levels:[ a_s; b_s; v_s ]
+      ~constraints:[ (a_s, Univ.UnivConstraint.Le, v_s); (v_s, Univ.UnivConstraint.Le, b_s) ]
+  in
+  Alcotest.(check (list string)) "the solution-only level is walked through, not reported"
+    [ cname a_c ^ " <= " ^ cname b_c ]
+    (entailment ~challenge ~solution)
+
+let t_univ_alias () =
+  (* an equality makes the two levels one node (UGraph.Alias): both directions *)
+  let challenge = graph ~levels:[ a_c; b_c ] ~constraints:[] in
+  let solution = graph ~levels:[ a_s; b_s ] ~constraints:[ (a_s, Univ.UnivConstraint.Eq, b_s) ] in
+  Alcotest.(check (list string)) "a collapsed pair is reported in both directions"
+    [ cname a_c ^ " <= " ^ cname b_c; cname b_c ^ " <= " ^ cname a_c ]
+    (entailment ~challenge ~solution)
+
+let t_univ_unknown_level () =
+  (* a level of a library only the solution loaded: the constraint cannot hold
+     in a graph that does not even know the level, and must not raise *)
+  let challenge = graph ~levels:[ a_c; b_c ] ~constraints:[] in
+  let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Le, g) ] in
+  Alcotest.(check (list string)) "an unknown level is a failure, not a crash"
+    [ cname a_c ^ " <= " ^ cname g ]
+    (entailment ~challenge ~solution)
+
+(* --- reading the solution file --- *)
+
+let t_bom () =
+  Alcotest.(check string) "a leading UTF-8 BOM is dropped" "Theorem foo : True."
+    (RC.Driver.strip_bom "\xef\xbb\xbfTheorem foo : True.");
+  Alcotest.(check string) "a BOM elsewhere is left alone" "a\xef\xbb\xbfb"
+    (RC.Driver.strip_bom "a\xef\xbb\xbfb");
+  Alcotest.(check string) "ordinary text is untouched" "Theorem foo : True."
+    (RC.Driver.strip_bom "Theorem foo : True.");
+  Alcotest.(check string) "a short file is untouched" "a" (RC.Driver.strip_bom "a")
+
 (* --- the vernacular filter --- *)
 
 let vc ?(control = []) ?(attrs = []) expr =
@@ -160,6 +263,15 @@ let () =
           Alcotest.test_case "universe shift" `Quick t_shift;
           Alcotest.test_case "external universes" `Quick t_external;
           Alcotest.test_case "term structure" `Quick t_structure ] );
+      ( "universes",
+        [ Alcotest.test_case "no extra constraint" `Quick t_univ_no_extra;
+          Alcotest.test_case "bound by a global level" `Quick t_univ_global_bound;
+          Alcotest.test_case "strict vs non-strict" `Quick t_univ_strict;
+          Alcotest.test_case "lower bound" `Quick t_univ_backward;
+          Alcotest.test_case "solution-only level" `Quick t_univ_passthrough;
+          Alcotest.test_case "collapsed levels" `Quick t_univ_alias;
+          Alcotest.test_case "level unknown to the challenge" `Quick t_univ_unknown_level ] );
+      ("driver", [ Alcotest.test_case "utf-8 bom" `Quick t_bom ]);
       ( "filter",
         [ Alcotest.test_case "always denied" `Quick t_always_denied;
           Alcotest.test_case "options" `Quick t_options;

@@ -1,0 +1,2 @@
+{ "exit_code": 0,
+  "note": "A signature-style challenge: Parameter P, Axiom P_true and an Admitted helper are part of the specification, and the target's statement and proof rest on them. They are not in permitted_axioms, so before the challenge_axioms change this was rejected as forbidden_axiom. Observed verdict: ok, targets[0].assumptions = [\"Challenge.P\", \"Challenge.P_true\", \"Challenge.helper\"] (Challenge.P comes in through foo's own statement). run_fixtures.ml cannot assert on the assumptions list; the exit code is the automated part of this check." }
