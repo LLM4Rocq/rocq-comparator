@@ -100,6 +100,23 @@ let t_coqproject () =
       "-I"; Filename.concat dir "ml" ]
     (RC.Config.loadpath_args c)
 
+(* Regression for the old hand-rolled tokenizer, which stripped quotes only
+   AFTER splitting on whitespace, so a quoted directory containing a space was
+   split into two bogus arguments, and it could not skip inline hash comments.
+   Rocq's own parser (CoqProject_file.read_project_file) gets both right. *)
+let t_coqproject_quoting () =
+  let dir = tmpdir () in
+  write (Filename.concat dir "_CoqProject")
+    "-Q \"my dir\" MyLib  # an inline comment, ignored\n-I \"ml dir\"\n";
+  let c =
+    { RC.Config.default with
+      RC.Config.config_dir = dir; coqproject = Some "_CoqProject"; theorem_names = [ "foo" ] }
+  in
+  Alcotest.(check (list string)) "a quoted directory with a space is one argument"
+    [ "-Q"; Filename.concat dir "my dir"; "MyLib";
+      "-I"; Filename.concat dir "ml dir" ]
+    (RC.Config.loadpath_args c)
+
 (* --- Verdict --- *)
 
 let t_verdict_roundtrip () =
@@ -246,7 +263,8 @@ let () =
           Alcotest.test_case "json round trip" `Quick t_json_roundtrip;
           Alcotest.test_case "no targets" `Quick t_no_targets;
           Alcotest.test_case "top name" `Quick t_top_name;
-          Alcotest.test_case "_CoqProject" `Quick t_coqproject ] );
+          Alcotest.test_case "_CoqProject" `Quick t_coqproject;
+          Alcotest.test_case "_CoqProject quoting" `Quick t_coqproject_quoting ] );
       ( "verdict",
         [ Alcotest.test_case "json round trip" `Quick t_verdict_roundtrip;
           Alcotest.test_case "exit codes" `Quick t_exit_codes;

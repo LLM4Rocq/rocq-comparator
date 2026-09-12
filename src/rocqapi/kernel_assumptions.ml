@@ -25,6 +25,14 @@ open Names
    nothing changes for the usual fully qualified names
    ("Stdlib.Logic.Classical_Prop.classic"). *)
 
+(* [KerName.to_string] is flagged "not to be used for user-facing messages",
+   because it is the raw internal encoding rather than a pretty-printed name.
+   That raw encoding is exactly what we want here: it is the stable, canonical,
+   fully-qualified dotted string ("Stdlib.Logic.Classical_Prop.classic") that
+   [permitted_axioms] entries are written as, so it doubles as the matching key
+   and the reported name.  There is no better-fit "safe name" API for the
+   canonical name of a constant, and [permitted_axioms] are user-provided
+   strings of precisely this shape, so this is the pragmatic and correct choice. *)
 let const_name (c : Constant.t) = KerName.to_string (Constant.canonical c)
 
 (* The canonical name of the [i]th inductive type of the block [m]: the

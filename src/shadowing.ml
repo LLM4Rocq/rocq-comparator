@@ -36,18 +36,13 @@ let switch_roots () : string list =
         p Boot.Env.corelib; p Boot.Env.user_contrib ]
   | Some Boot.Env.Boot | None -> []
 
-(* logical path as an outer-to-inner list of identifiers *)
-let fwd (dp : DirPath.t) : Id.t list = List.rev (DirPath.repr dp)
-
 (* [a] and [b] overlap when one is a prefix of the other (equal paths too):
-   then the two directories claim intersecting logical namespaces. *)
+   then the two directories claim intersecting logical namespaces.
+   [Libnames.is_dirpath_prefix_of] is Rocq's own prefix test (over the
+   outer-to-inner reversal of [DirPath.repr]); checking both directions gives
+   the symmetric "one is a prefix of the other". *)
 let overlaps (a : DirPath.t) (b : DirPath.t) =
-  let rec prefix x y =
-    match (x, y) with
-    | [], _ | _, [] -> true
-    | u :: x', v :: y' -> Id.equal u v && prefix x' y'
-  in
-  prefix (fwd a) (fwd b)
+  Libnames.is_dirpath_prefix_of a b || Libnames.is_dirpath_prefix_of b a
 
 let check ~(top : DirPath.t) : (unit, Verdict.reason * string) result =
   let roots = switch_roots () in

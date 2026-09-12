@@ -44,11 +44,19 @@ let plugin_basename s =
 
 let lowercase_path (p : string list) = String.lowercase_ascii (String.concat " " p)
 
-(* Options whose value changes what the kernel checks. *)
+(* Options whose value changes what the kernel checks, matched against the
+   space-joined, lowercased option-name path (["Guard"; "Checking"] etc.,
+   verified against the [optkey]s in vernacentries.ml / extraction/table.ml).
+
+   Only Set/Unset-able options belong here.  "Allow Rewrite Rules" is NOT one:
+   rewrite rules are gated by the [-allow-rewrite-rules] init flag, and Envcheck
+   already asserts [Global.rewrite_rules_allowed () = false].  "Printing
+   Universes File" is not an option either: printing universes to a file is the
+   dedicated [VernacPrint (PrintUniverses { file = Some _ })] arm below.  Both
+   were dead entries and are dropped. *)
 let denied_options =
   [ "guard checking"; "positivity checking"; "universe checking";
-    "definitional uip"; "allow rewrite rules"; "extraction output directory";
-    "printing universes file" ]
+    "definitional uip"; "extraction output directory" ]
 
 let classify_option (name : Goptions.option_name) : [ `Allow | `Deny ] =
   if List.mem (lowercase_path name) denied_options then `Deny else `Allow

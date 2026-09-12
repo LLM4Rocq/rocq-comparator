@@ -40,9 +40,13 @@ let find_rocqchk () : string option =
 (* [top] as a (logical prefix, base name) pair: with "-Q dir PREFIX" the
    library PREFIX.BASE is looked up as dir/BASE.vo. *)
 let split_top (top : DirPath.t) =
-  match List.rev (String.split_on_char '.' (DirPath.to_string top)) with
-  | [] -> ("", "Top")
-  | base :: rev_prefix -> (String.concat "." (List.rev rev_prefix), base)
+  match Libnames.split_dirpath top with
+  | prefix, base ->
+    (* [DirPath.to_string] of the empty dirpath is "<>", not the empty string
+       we want for a single-component top such as "Challenge"; special-case it. *)
+    let prefix = if DirPath.is_empty prefix then "" else DirPath.to_string prefix in
+    (prefix, Id.to_string base)
+  | exception Failure _ -> ("", "Top")
 
 let save_vo ~(top : DirPath.t) ~(dir : string) : (string, string) result =
   let _, base = split_top top in

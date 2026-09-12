@@ -65,33 +65,34 @@ let sandbox_mode_to_string = function
   | Auto -> "auto" | No_sandbox -> "none" | Sandbox_exec -> "sandbox-exec"
   | Landrun -> "landrun" | Bwrap -> "bwrap" | Custom l -> "custom:" ^ String.concat " " l
 
-(* -Q/-R/-I lines of a _CoqProject / _RocqProject file; other lines ignored. *)
-let parse_coqproject ~dir (text : string) : loadpath_entry list =
-  let toks =
-    text |> String.split_on_char '\n'
-    |> List.filter (fun l -> not (String.length (String.trim l) > 0 && (String.trim l).[0] = '#'))
-    |> List.concat_map (fun l -> String.split_on_char ' ' l)
-    |> List.concat_map (String.split_on_char '\t')
-    |> List.filter (fun s -> s <> "")
-    (* coq_makefile accepts quoted arguments: -Q . "" is the usual spelling
-       of the empty logical name *)
-    |> List.map (fun s ->
-        let n = String.length s in
-        if n >= 2 && s.[0] = '"' && s.[n - 1] = '"' then String.sub s 1 (n - 2) else s)
-  in
-  let rec go acc = function
-    | "-Q" :: d :: l :: tl -> go (Q (absolute ~dir d, l) :: acc) tl
-    | "-R" :: d :: l :: tl -> go (R (absolute ~dir d, l) :: acc) tl
-    | "-I" :: d :: tl -> go (I (absolute ~dir d) :: acc) tl
-    | _ :: tl -> go acc tl
-    | [] -> List.rev acc
-  in
-  go [] toks
+(* The -Q/-R/-I entries of a _CoqProject / _RocqProject file, read with Rocq's
+   own parser [CoqProject_file.read_project_file] rather than a hand-rolled
+   tokenizer.  The hand-rolled version stripped quotes *after* splitting on
+   whitespace, so [-Q "my dir" MyLib] silently parsed the wrong directory, and
+   it could not handle inline '#' comments; Rocq's parser gets both right.
 
-let read_file path =
-  let ic = open_in_bin path in
-  let s = really_input_string ic (in_channel_length ic) in
-  close_in ic; s
+   [read_project_file] resolves every path relative to the project file's own
+   directory, so no [~dir] plumbing is needed here; we take the [.path] field
+   (an absolute, dot-collapsed path) rather than [.canonical_path] (which also
+   resolves symlinks and would defeat load-path checks that compare against the
+   configured directories verbatim).  Note that Rocq rewrites the logical name
+   "Coq" to "Corelib" for -Q/-R, exactly as the real [rocq] does.
+
+   The parser is strict: it raises [Parsing_error] / [UnableToOpenProjectFile]
+   on a malformed or unreadable file.  We catch those and fall back to [] to
+   preserve today's lenient behaviour.  (A few malformed-argument arms inside
+   the parser call an internal exit 1 that cannot be caught; that is acceptable
+   -- a broken project file is operator error, not adversarial input.) *)
+let parse_coqproject (path : string) : loadpath_entry list =
+  let open CoqProject_file in
+  match read_project_file ~warning_fn:(fun _ -> ()) path with
+  | proj ->
+    let q = List.map (fun { thing = ({ path; _ }, l); _ } -> Q (path, l)) proj.q_includes in
+    let r = List.map (fun { thing = ({ path; _ }, l); _ } -> R (path, l)) proj.r_includes in
+    let i = List.map (fun { thing = { path; _ }; _ } -> I path) proj.ml_includes in
+    q @ r @ i
+  | exception Parsing_error _ -> []
+  | exception UnableToOpenProjectFile _ -> []
 
 (* Load path with the _CoqProject entries appended, all dirs absolute. *)
 let resolve_loadpath (c : t) : loadpath_entry list =
@@ -103,7 +104,7 @@ let resolve_loadpath (c : t) : loadpath_entry list =
     | None -> []
     | Some p ->
       let p = absolute ~dir:c.config_dir p in
-      if Sys.file_exists p then parse_coqproject ~dir:(Filename.dirname p) (read_file p) else []
+      if Sys.file_exists p then parse_coqproject p else []
   in
   own @ proj
 
@@ -139,7 +140,17 @@ let is_under ~root p =
   String.length p >= lr && String.sub p 0 lr = root
   && (String.length p = lr || p.[lr] = '/' || root = "/")
 
-(* Logical name of the challenge library, as coqdep would derive it. *)
+(* Logical name of the challenge library, as coqdep would derive it.
+
+   This stays a pure filesystem/string computation on purpose.  It is called
+   from bin/main.ml's [resolved_config] in the OUTER process, before Rocq is
+   initialised (no [Coqinit]), so it must not touch [Loadpath] or [Global],
+   which need a live document.  A [Loadpath]-based rewrite would require that
+   initialisation and is therefore not an option here.  The work is physical
+   path-prefix arithmetic (which configured -Q/-R directory contains the
+   challenge file, and the relative path below it), for which the [DirPath] /
+   [Libnames] helpers -- which operate on logical dirpaths, not physical
+   directories -- do not fit; so this is kept as direct string handling. *)
 let top_name (c : t) : string =
   match c.top with
   | Some t -> t
