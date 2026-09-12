@@ -69,7 +69,8 @@ let rec check_attributes p (flags : Attributes.vernac_flags) =
 let check_control p (c : control_flag) =
   match c.CAst.v with
   | ControlRedirect _ -> deny "Redirect"
-  | ControlTime | ControlInstructions | ControlProfile _ | ControlTimeout _
+  | ControlProfile (Some _) -> deny "Profile to a file"
+  | ControlTime | ControlInstructions | ControlProfile None | ControlTimeout _
   | ControlFail | ControlSucceed ->
     ignore p; ok
 

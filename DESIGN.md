@@ -445,7 +445,7 @@ capability or one attack):
 | inductive_redefinition (extra constructor) | dependency_mismatch |
 | bypass_check_guard (`#[bypass_check(guard)] Fixpoint` proving False) | forbidden_command (filter) — and `unsafe_flags` when run with the filter disabled via a test-only env var |
 | unset_guard_checking | forbidden_command |
-| module_include_admitted (`Module M0 ... Admitted ... Include M0`) | not_proved |
+| module_include_admitted (`Module M0 ... Admitted ... Include M0`) | forbidden_axiom (`Include` re-declares the constant as an alias definition of `M0.foo`, whose admitted proof is caught by the axiom check) |
 | section_variable (`Section` + `Variable H : False`) | statement_mismatch |
 | def_hole (`Definition large : nat. Admitted.` + `37 < large`) | ok |
 | def_hole_type_mismatch | statement_mismatch |

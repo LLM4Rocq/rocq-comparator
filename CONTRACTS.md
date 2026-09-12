@@ -252,7 +252,7 @@ deviations, all additive:
    challenge, `Def` in the solution). Both are checked as targets instead,
    which is what DESIGN section 5 asks for.
 
-`bin/main.ml` honours `ROCQ_COMPARATOR_NO_FILTER=1` as a **test-only** escape
+`bin/main.ml` honours `ROCQ_COMPARATOR_UNSAFE_NO_FILTER=1` as a **test-only** escape
 hatch: the solution is then run through the lenient filter, so the fixture
 suite can show that the kernel-level checks reject `#[bypass_check(guard)]`
 and `Unset Guard Checking` on their own (`unsafe_flags`) even when the AST

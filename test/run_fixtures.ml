@@ -178,7 +178,7 @@ let () =
              [ main;
                check_one ~exe ~dir ~name
                  ~expected:(Yojson.Safe.from_string (read_file nofilter))
-                 ~env:[| "ROCQ_COMPARATOR_NO_FILTER=1" |] ~label:" [no filter]" ]
+                 ~env:[| "ROCQ_COMPARATOR_UNSAFE_NO_FILTER=1" |] ~label:" [no filter]" ]
            else [ main ])
       dirs
   in

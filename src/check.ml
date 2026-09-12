@@ -22,6 +22,10 @@ type hooks = {
     (top:DirPath.t -> scratch:string -> loadpath_args:string list -> deadline:float ->
      (unit, string) result)
     option;
+  filter_status : Verdict.check_status;
+  (** [Ok] normally; [Fail "..."] when the strict filter has been disabled by
+      the test-only escape hatch, so that a verdict produced without the
+      filter can never be mistaken for a normal one *)
 }
 
 let permissive_hooks =
@@ -31,10 +35,11 @@ let permissive_hooks =
       (fun ~top:_ ~trusted_roots:_ ~permitted_libraries:_ ~impredicative_set:_ ~indices_matter:_ ->
          Result.Ok ());
     trusted_roots = (fun _ -> []);
-    rocqchk = None }
+    rocqchk = None;
+    filter_status = Verdict.Fail "permissive hooks" }
 
 let check_names =
-  [ "challenge_compile"; "solution_compile"; "joined"; "statements"; "closure";
+  [ "filter"; "challenge_compile"; "solution_compile"; "joined"; "statements"; "closure";
     "axioms"; "hygiene"; "libraries"; "rocqchk" ]
 
 (* the verdict's [checks] field, in the fixed order, defaulting to Skipped *)
@@ -67,6 +72,7 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
   in
   let with_version (v : Verdict.t) = { v with Verdict.rocq_version = Driver.rocq_version () } in
   let deadline = Unix.gettimeofday () +. cfg.Config.timeout_s in
+  Hashtbl.replace checks "filter" h.filter_status;
   try
     (* 1. init *)
     time "init" (fun () -> Driver.init ~args:(Config.rocq_args cfg));

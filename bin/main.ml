@@ -145,11 +145,11 @@ let rec rm_rf path =
    assumptions) catch on their own what the AST filter would have rejected.
    Never set this in production. *)
 let filter_disabled () =
-  match Sys.getenv_opt "ROCQ_COMPARATOR_NO_FILTER" with
+  match Sys.getenv_opt "ROCQ_COMPARATOR_UNSAFE_NO_FILTER" with
   | None | Some "" | Some "0" -> false
   | Some _ ->
     prerr_endline
-      "rocq-comparator: WARNING: ROCQ_COMPARATOR_NO_FILTER is set, the solution runs \
+      "rocq-comparator: WARNING: ROCQ_COMPARATOR_UNSAFE_NO_FILTER is set, the solution runs \
        without the strict vernacular filter";
     true
 
@@ -176,7 +176,10 @@ let real_hooks (cfg : C.Config.t) : C.Check.hooks =
                 match C.Rocqchk.save_vo ~top ~dir:scratch with
                 | Result.Error e -> Result.Error e
                 | Result.Ok _ ->
-                  C.Rocqchk.run ~rocqchk:exe ~top ~vo_dir:scratch ~loadpath_args ~deadline)) }
+                  C.Rocqchk.run ~rocqchk:exe ~top ~vo_dir:scratch ~loadpath_args ~deadline));
+    filter_status =
+      (if no_filter then C.Verdict.Fail "DISABLED by ROCQ_COMPARATOR_UNSAFE_NO_FILTER"
+       else C.Verdict.Ok) }
 
 let run_inner ~pretty (config_path : string) =
   match C.Config.of_json_file config_path with
@@ -186,6 +189,10 @@ let run_inner ~pretty (config_path : string) =
     C.Verdict.exit_code v
   | Result.Ok cfg ->
     let scratch = Filename.dirname config_path in
+    (* tactic caches (.lia.cache, .nra.cache) are written to the cwd: keep
+       them in the scratch directory, which is also the only writable place
+       inside the sandbox *)
+    (try Sys.chdir scratch with Sys_error _ -> ());
     let v = C.Check.run_inner (real_hooks cfg) cfg ~scratch in
     C.Verdict.print ~pretty v;
     C.Verdict.exit_code v
