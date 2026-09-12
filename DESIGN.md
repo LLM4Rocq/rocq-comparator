@@ -572,3 +572,35 @@ built and run against Rocq 9.2 / OCaml 5.5.1; whole runs take ~0.2 s with
   `VernacSchemeAll`, `VernacAbbreviation`).
 - `Envars.coqpath ()`, `Boot.Env` give the install dirs; `rocqchk` lives next
   to `rocq` in the switch's `bin/`.
+
+## 14. Roadmap (deferred)
+
+Two audit-identified features are intentionally not implemented yet:
+
+- **Independent second kernel.** Lean's comparator can cross-check with an
+  independently-authored kernel (`nanoda`). We run `rocqchk` (Rocq's own
+  `coqchk`), which is a differently-implemented replay but developed inside
+  the Rocq project, not an independent implementation. Rocq also has no
+  `lean4export`-equivalent serialization to feed a foreign kernel. Adding a
+  genuine second kernel is high-value but large and partly blocked by the
+  ecosystem.
+- **Batch challenge-amortization.** `batch` recompiles the challenge once per
+  solution (one sandboxed process each). Sharing a single compiled challenge
+  across many solutions to the same problem — by forking after the challenge
+  is compiled and running each solution in a child — would cut per-solution
+  cost substantially. It needs care around Rocq global state across `fork`
+  (the memprof watchdog thread, open file descriptors) and per-child
+  re-sandboxing.
+
+## 15. Web front-end (separate project)
+
+A client-side browser front-end lives in the sibling project
+`rocq-comparator-web` (kept out of this repo). It runs the whole check in the
+browser on a WebAssembly Rocq, modelled on comparator.live.lean-lang.org. The
+backend spike found the full build feasible via js_of_ocaml/wasm_of_ocaml with
+jsCoq/wacoq's `coerce-32bit` patch to the Rocq kernel (the only real blocker
+is the kernel's 63-bit-int assumption; zarith stubs are not needed — Rocq 9.2
+uses native int63/float64). See `rocq-comparator-web/BACKEND.md`. The browser
+build uses `Check.run_inner` with `rocqchk = None` and no OS sandbox (the
+browser origin is the sandbox); the strict AST filter, kernel comparison,
+assumptions, envcheck and shadowing all run as compiled OCaml in the worker.
