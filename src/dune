@@ -1,0 +1,22 @@
+(library
+ (name rocq_comparator)
+ (libraries
+  unix
+  str
+  threads.posix
+  yojson
+  memprof-limits
+  rocq-runtime.boot
+  rocq-runtime.clib
+  rocq-runtime.lib
+  rocq-runtime.kernel
+  rocq-runtime.library
+  rocq-runtime.engine
+  rocq-runtime.proofs
+  rocq-runtime.printing
+  rocq-runtime.parsing
+  rocq-runtime.gramlib
+  rocq-runtime.coqargs
+  rocq-runtime.sysinit
+  rocq-runtime.vernac
+  rocq-runtime.plugins.ltac))

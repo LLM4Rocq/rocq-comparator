@@ -1,0 +1,5 @@
+(executable
+ (name main)
+ (public_name rocq-comparator)
+ (package rocq-comparator)
+ (libraries rocq_comparator cmdliner yojson unix))

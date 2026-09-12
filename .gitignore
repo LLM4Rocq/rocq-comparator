@@ -1,0 +1,12 @@
+_opam/
+_build/
+*.vo
+*.vos
+*.vok
+*.glob
+*.aux
+.lia.cache
+.nia.cache
+.merlin
+*.install
+.DS_Store
