@@ -474,3 +474,44 @@ test/fixtures/<name>/...   test/run_fixtures.ml   test/unit/*.ml
 
 Build: `opam exec --switch=<project dir> -- dune build @all @runtest` in the
 project-local switch (`./_opam`, OCaml 5.5.1, rocq-core 9.2.0).
+
+## 13. Rocq 9.2 API notes (verified in the local switch, `_opam/lib/rocq-runtime`)
+
+A prototype of the pipeline (sections 3–4, statement match, assumptions) was
+built and run against Rocq 9.2 / OCaml 5.5.1; whole runs take ~0.2 s with
+`Arith`+`Lia` loaded. Verified facts:
+
+- `Coqinit.init_ocaml (); parse_arguments ~parse_extra ~initial_args args;
+  init_runtime ~usage opts; init_document opts` then
+  `root = Vernacstate.freeze_full_state ()`. For each library:
+  `Vernacstate.unfreeze_full_state root; Coqinit.start_library
+  ~intern:Vernacinterp.fs_intern ~top (Coqargs.injection_commands opts)`.
+  Starting the same `top` twice this way works (challenge then solution).
+- Parsing loop: `Procq.Parsable.make ~loc:(Loc.initial (Loc.InFile
+  {dirpath=None; file})) (Gramlib.Stream.of_string src)`; per sentence
+  `Procq.Entry.parse (Pvernac.main_entry pm) pa` with `pm = Some
+  (Synterp.get_default_proof_mode ())` iff
+  `st.interp.lemmas <> None` (a proof is open), else `None`; `None` result =
+  end of file. Execute with `Vernacinterp.interp ~intern:Vernacinterp.fs_intern
+  ~st vc` (returns the new `Vernacstate.t`).
+- `Assumptions.assumptions ?add_opaque ?add_transparent
+  (Library.indirect_accessor) ts [gr]` — takes a **list** of `GlobRef.t` in
+  9.2 (no separate constr). Keys are `Printer.context_object`:
+  `Variable | Axiom of axiom * ... | Opaque | Transparent`, with `axiom =
+  Constant of Constant.t | Positive of MutInd.t | Guarded of GlobRef.t |
+  TypeInType of GlobRef.t | UIP of MutInd.t`. A `#[bypass_check(guard)]`
+  fixpoint used by the proof shows up as `Guarded`; an `Admitted` target
+  shows up as `Axiom (Constant Challenge.foo)` with the target itself `Undef`.
+- `Names.Constant.to_string` gives the fully qualified name
+  (`Challenge.magic`, `Stdlib.Logic.Classical_Prop.classic`).
+- `Library.save_library_to Library.ProofsTodoNone ~output_native_objects:false
+  top path_dot_vo` calls `Declaremods.end_library` itself and asserts
+  `Safe_typing.is_joined_environment`; call it once per library, last.
+- `Vernacexpr.extend_name = { ext_plugin : string; ext_entry : string;
+  ext_index : int }`; control flags: `ControlTime | ControlInstructions |
+  ControlProfile | ControlRedirect | ControlTimeout | ControlFail |
+  ControlSucceed`. The full constructor lists of `synterp_vernac_expr` and
+  `synpure_vernac_expr` are in `vernac/vernacexpr.mli` (9.2 adds
+  `VernacSchemeAll`, `VernacAbbreviation`).
+- `Envars.coqpath ()`, `Boot.Env` give the install dirs; `rocqchk` lives next
+  to `rocq` in the switch's `bin/`.
