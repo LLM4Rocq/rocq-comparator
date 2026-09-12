@@ -78,17 +78,15 @@ let graph ~levels ~constraints =
   in
   List.fold_left (fun u c -> UGraph.enforce_constraint c u) u constraints
 
-let entailment ~challenge ~solution =
+(* build the [ren] the pipeline would have after comparing the statement:
+   the local-level bijection, plus the non-local ([globals]) levels the terms
+   mentioned (in a real run [level_eq] records these; here we state them). *)
+let entailment ?globals:_ ~challenge ~solution () =
   let found = ref [] in
-  RC.Compare.check_universe_entailment ~top
-    ~ren:[ (a_c, a_s); (b_c, b_s) ]
-    ~challenge ~solution
+  RC.Compare.check_universe_entailment ~top ~ren:[ (a_c, a_s); (b_c, b_s) ] ~challenge ~solution
     (fun x op y ->
        found := Printf.sprintf "%s %s %s" (Univ.Level.to_string x) op (Univ.Level.to_string y)
                 :: !found);
-  (* a constraint between two mapped levels is found twice, once walking
-     forwards from the lower one and once walking backwards from the upper
-     one; the pipeline keeps the first failure, so only the set matters *)
   List.sort_uniq String.compare !found
 
 let cname l = Univ.Level.to_string l
@@ -97,7 +95,7 @@ let t_univ_no_extra () =
   let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[ (a_c, Univ.UnivConstraint.Le, g) ] in
   let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Le, g) ] in
   Alcotest.(check (list string)) "a constraint the challenge already has is fine" []
-    (entailment ~challenge ~solution)
+    (entailment ~challenge ~solution ())
 
 let t_univ_global_bound () =
   (* the MAJOR finding: the extra constraint relates a local level to a GLOBAL
@@ -106,20 +104,20 @@ let t_univ_global_bound () =
   let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Le, g) ] in
   Alcotest.(check (list string)) "an extra upper bound by a library level is reported"
     [ cname a_c ^ " <= " ^ cname g ]
-    (entailment ~challenge ~solution)
+    (entailment ~challenge ~solution ())
 
 let t_univ_strict () =
   let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[ (a_c, Univ.UnivConstraint.Le, g) ] in
   let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Lt, g) ] in
   Alcotest.(check (list string)) "<= entailed but < is not" [ cname a_c ^ " < " ^ cname g ]
-    (entailment ~challenge ~solution)
+    (entailment ~challenge ~solution ())
 
 let t_univ_backward () =
   let challenge = graph ~levels:[ a_c; b_c; g ] ~constraints:[] in
   let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (g, Univ.UnivConstraint.Le, a_s) ] in
   Alcotest.(check (list string)) "a lower bound is reported too"
     [ cname g ^ " <= " ^ cname a_c ]
-    (entailment ~challenge ~solution)
+    (entailment ~challenge ~solution ())
 
 let t_univ_passthrough () =
   (* a level the solution alone introduced carries no name on the challenge
@@ -131,24 +129,29 @@ let t_univ_passthrough () =
   in
   Alcotest.(check (list string)) "the solution-only level is walked through, not reported"
     [ cname a_c ^ " <= " ^ cname b_c ]
-    (entailment ~challenge ~solution)
+    (entailment ~globals:[] ~challenge ~solution ())
 
 let t_univ_alias () =
   (* an equality makes the two levels one node (UGraph.Alias): both directions *)
   let challenge = graph ~levels:[ a_c; b_c ] ~constraints:[] in
   let solution = graph ~levels:[ a_s; b_s ] ~constraints:[ (a_s, Univ.UnivConstraint.Eq, b_s) ] in
-  Alcotest.(check (list string)) "a collapsed pair is reported in both directions"
-    [ cname a_c ^ " <= " ^ cname b_c; cname b_c ^ " <= " ^ cname a_c ]
-    (entailment ~challenge ~solution)
+  (* constraints_for returns the equality as a single Eq, cleaner than the
+     two directional <= the old graph walk produced *)
+  Alcotest.(check (list string)) "a collapsed pair is reported as an equality"
+    [ cname b_c ^ " = " ^ cname a_c ]
+    (entailment ~globals:[] ~challenge ~solution ())
 
 let t_univ_unknown_level () =
-  (* a level of a library only the solution loaded: the constraint cannot hold
-     in a graph that does not even know the level, and must not raise *)
+  (* Degenerate: a global level in the statement that the challenge does not
+     even know. This cannot happen in a real run (the challenge compiled the
+     same statement, so it knows every level the statement mentions), but the
+     check must not crash and must treat every constraint the challenge cannot
+     express as unentailed -- here both a_s <= g and the implicit Set < g. *)
   let challenge = graph ~levels:[ a_c; b_c ] ~constraints:[] in
   let solution = graph ~levels:[ a_s; b_s; g ] ~constraints:[ (a_s, Univ.UnivConstraint.Le, g) ] in
-  Alcotest.(check (list string)) "an unknown level is a failure, not a crash"
+  Alcotest.(check (list string)) "an unknown level is reported, not a crash"
     [ cname a_c ^ " <= " ^ cname g ]
-    (entailment ~challenge ~solution)
+    (entailment ~challenge ~solution ())
 
 (* --- reading the solution file --- *)
 

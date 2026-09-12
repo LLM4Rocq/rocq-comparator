@@ -226,115 +226,80 @@ let alias_detail name canonical =
 
    Comparing the statements up to the level bijection [ren] is not enough: the
    solution can keep the statement's levels and instead add *constraints* on
-   them, which proves a strictly weaker theorem. The textbook case is a
-   monomorphic [Theorem foo : forall (A : Type@{u}), ...] whose proof quietly
-   unifies [u] with [Set] -- afterwards [foo] only holds for Set-sized types,
-   and nothing in the term comparison notices.
+   them, proving a strictly weaker theorem. The textbook case is a monomorphic
+   [Theorem foo : forall (A : Type@{u}), ...] whose proof quietly unifies [u]
+   with [Set] -- afterwards [foo] only holds for Set-sized types, and nothing
+   in the term comparison notices. The extra constraint need not relate two
+   library-local levels: it can pin a statement level against Set or against a
+   Required library's level.
 
-   The constraint the solution adds need not relate two levels of the library:
-   it can relate a statement level to a level of a Required library, or go
-   through a level the solution alone introduced. So the check is done on the
-   universe graph rather than pairwise over the local levels: from every
-   mapped level we walk the solution graph forwards and backwards, and every
-   constraint we reach -- expressed in challenge-side names -- must already
-   hold in the challenge graph. Levels the solution alone introduced are
-   pass-through nodes (no name on the challenge side, but paths may cross
-   them). Each walk visits a node at most twice (once non-strict, once
-   strict), so the whole check is linear in the graph. *)
+   We ask the kernel, via [UGraph.constraints_for ~kept], for the solution's
+   constraints among the levels we care about, and require each to hold in the
+   challenge graph too. [kept] is the statement's local levels (mapped through
+   [ren]), [Set], and *every non-local level* -- the extra bound can be by any
+   level of any loaded library, and it appears only in the solution's proof,
+   not in the statement, so we cannot know in advance which one; keeping them
+   all is safe because a constraint between two non-local levels comes from the
+   shared libraries and holds in both graphs (so it is never reported), while a
+   constraint from a statement level to a non-local one is exactly the attack.
+   [constraints_for] transitively closes over the levels it drops (the
+   solution's own internal levels), so those need not be kept. This replaces a
+   hand-rolled graph reachability with the library's own constraint
+   projection. *)
 
-type adjacency = (Univ.Level.t * bool) list Univ.Level.Map.t
+let op_str = function
+  | Univ.UnivConstraint.Lt -> "<"
+  | Univ.UnivConstraint.Le -> "<="
+  | Univ.UnivConstraint.Eq -> "="
 
-let add_edge (m : adjacency) (u : Univ.Level.t) (e : Univ.Level.t * bool) =
-  let cur = match Univ.Level.Map.find_opt u m with Some l -> l | None -> [] in
-  Univ.Level.Map.add u (e :: cur) m
-
-(* forward ("u <= v" / "u < v") and backward adjacency of a universe graph.
-   An [Alias] node is an equality, hence an edge in both directions. *)
-let adjacencies (g : UGraph.t) : adjacency * adjacency =
-  Univ.Level.Map.fold
-    (fun u node acc ->
-       match node with
-       | UGraph.Alias v ->
-         let fwd, bwd = acc in
-         let fwd = add_edge (add_edge fwd u (v, false)) v (u, false) in
-         let bwd = add_edge (add_edge bwd u (v, false)) v (u, false) in
-         (fwd, bwd)
-       | UGraph.Node succ ->
-         Univ.Level.Map.fold
-           (fun v strict (fwd, bwd) -> (add_edge fwd u (v, strict), add_edge bwd v (u, strict)))
-           succ acc)
-    (UGraph.repr g)
-    (Univ.Level.Map.empty, Univ.Level.Map.empty)
-
-let succs (adj : adjacency) (u : Univ.Level.t) =
-  match Univ.Level.Map.find_opt u adj with Some l -> l | None -> []
-
-(* levels reachable from [start] (excluding [start] itself unless a cycle
-   leads back to it), mapped to "some path to it used a strict edge". *)
-let reachable (adj : adjacency) (start : Univ.Level.t) : bool Univ.Level.Map.t =
-  let push strict l acc =
-    List.fold_left (fun acc (v, st) -> (v, strict || st) :: acc) acc (succs adj l)
-  in
-  (* An explicit worklist, not recursion: the solution decides the shape of
-     this graph, and a judge must not be killable with a deep chain of
-     universes. A node is re-entered only when a strict path reaches one that
-     so far was only reachable non-strictly, so each is expanded at most
-     twice. *)
-  let rec loop seen = function
-    | [] -> seen
-    | (l, strict) :: tl ->
-      let skip =
-        match Univ.Level.Map.find_opt l seen with
-        | Some seen_strict -> seen_strict || not strict
-        | None -> false
-      in
-      if skip then loop seen tl
-      else loop (Univ.Level.Map.add l strict seen) (push strict l tl)
-  in
-  loop Univ.Level.Map.empty (push false start [])
-
-(* [report lo op hi] is called, with challenge-side level names, for every
-   constraint the solution's graph has and the challenge's has not. *)
-let check_universe_entailment ~(top : DirPath.t) ~(ren : (Univ.Level.t * Univ.Level.t) list)
+let check_universe_entailment ~(top : DirPath.t)
+    ~(ren : (Univ.Level.t * Univ.Level.t) list)
     ~(challenge : UGraph.t) ~(solution : UGraph.t)
     (report : Univ.Level.t -> string -> Univ.Level.t -> unit) : unit =
-  match ren with
-  | [] -> () (* no level of the statement is library-local: nothing to entail *)
-  | _ :: _ ->
-    let fwd, bwd = adjacencies solution in
-    let known = UGraph.domain challenge in
-    (* solution level -> the name it has in the challenge, if any *)
+  let pairs = ren in
+  (* mapped statement levels (solution side) + Set + every non-local level *)
+  let kept =
+    Univ.Level.Set.fold
+      (fun l s -> if local_level ~top l then s else Univ.Level.Set.add l s)
+      (UGraph.domain solution)
+      (List.fold_left (fun s (_, b) -> Univ.Level.Set.add b s)
+         (Univ.Level.Set.singleton Univ.Level.set) pairs)
+  in
+  if Univ.Level.Set.cardinal kept < 2 then ()
+  else begin
+    (* a solution level -> its challenge-side name: Set and non-local levels
+       keep their name, a mapped local level takes its challenge twin, and a
+       level the solution alone introduced has no name (skipped -- but such
+       levels are not in [kept], so [constraints_for] never yields one). *)
     let to_challenge (w : Univ.Level.t) : Univ.Level.t option =
-      if local_level ~top w then
-        match List.find_opt (fun (_, b) -> Univ.Level.equal b w) ren with
+      if Univ.Level.is_set w then Some w
+      else
+        match List.find_opt (fun (_, b) -> Univ.Level.equal b w) pairs with
         | Some (a, _) -> Some a
-        | None -> None (* a level the solution alone introduced: pass through *)
-      else Some w (* Set, Prop and the levels of Required libraries keep their name *)
+        | None -> if local_level ~top w then None else Some w
     in
-    let entailed ~strict (a : Univ.Level.t) (b : Univ.Level.t) =
-      Univ.Level.Set.mem a known && Univ.Level.Set.mem b known
-      &&
-      let ua = Univ.Universe.make a and ub = Univ.Universe.make b in
-      UGraph.check_leq challenge (if strict then Univ.Universe.super ua else ua) ub
-    in
-    List.iter
-      (fun (a, a') ->
-         let walk adj (order : Univ.Level.t -> Univ.Level.t -> Univ.Level.t * Univ.Level.t) =
-           Univ.Level.Map.iter
-             (fun w strict ->
-                match to_challenge w with
-                | None -> ()
-                | Some wc ->
-                  if not (Univ.Level.equal wc a) then begin
-                    let lo, hi = order a wc in
-                    if not (entailed ~strict:false lo hi) then report lo "<=" hi
-                    else if strict && not (entailed ~strict:true lo hi) then report lo "<" hi
-                  end)
-             (reachable adj a')
-         in
-         walk fwd (fun a wc -> (a, wc));
-         walk bwd (fun a wc -> (wc, a)))
-      ren
+    let known = UGraph.domain challenge in
+    let is_stmt_local l = List.exists (fun (_, b) -> Univ.Level.equal b l) pairs in
+    Univ.UnivConstraints.iter
+      (fun (l, k, r) ->
+         (* Only constraints that touch one of the statement's OWN levels can
+            weaken the statement. A constraint purely between library levels
+            comes from the extra libraries the solution loaded (which the
+            challenge, being minimal, need not have) and says nothing about the
+            statement -- skip it. *)
+         if is_stmt_local l || is_stmt_local r then
+           match (to_challenge l, to_challenge r) with
+           | Some lc, Some rc ->
+             (* a constraint the challenge cannot even express (a level it does
+                not know) is, a fortiori, not entailed by it: report it *)
+             let entailed =
+               Univ.Level.Set.mem lc known && Univ.Level.Set.mem rc known
+               && UGraph.check_constraint challenge (lc, k, rc)
+             in
+             if not entailed then report lc (op_str k) rc
+           | _ -> ())
+      (UGraph.constraints_for ~kept solution)
+  end
 
 (* --- the check --- *)
 
