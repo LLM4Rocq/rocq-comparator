@@ -1,0 +1,2 @@
+{ "exit_code": 0,
+  "note": "The proof term mentions the primitive constants Corelib.Init.PrimInt63.{int,add,eqb} (Print Assumptions lists them under `Axioms:'). They must be classified as kernel primitives, not axioms, so the verdict is ok with no assumptions and no permitted_axioms entry." }

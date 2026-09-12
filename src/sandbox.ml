@@ -17,12 +17,52 @@ let name = function
   | Custom _ -> "custom"
   | No_sandbox -> "none"
 
-let inner_marker = "ROCQ_COMPARATOR_INNER"
+(* --- the child's environment ---------------------------------------------
 
-let is_inner () =
-  match Sys.getenv_opt inner_marker with
-  | None | Some "" | Some "0" -> false
-  | Some _ -> true
+   CRITICAL.  The inner process links the Rocq kernel and loads .vo files; a
+   whole family of environment variables can redirect what it loads and from
+   where:
+
+     ROCQLIB / COQLIB            where the standard library lives
+     ROCQPATH / COQPATH          extra load-path roots, prepended to user-contrib
+     ROCQ_* / COQ_*              other Rocq knobs (e.g. COQ_COLORS, and any
+                                 future one we do not know about)
+     XDG_DATA_HOME / XDG_DATA_DIRS / XDG_CONFIG_HOME
+                                 searched by Rocq for user-contrib and rc files
+     OCAMLPATH / OCAMLFIND_CONF / CAML_LD_LIBRARY_PATH / LD_LIBRARY_PATH /
+     DYLD_* / LD_PRELOAD         where findlib/the dynamic loader look for the
+                                 plugins (.cmxs) a Require can load
+
+   Anything on that list turns "the load path is trusted" (DESIGN assumption 1)
+   into a lie: a caller's stray COQPATH, or an attacker who can set one
+   variable in the environment of the judge, would get adversarial .vo files or
+   OCaml plugins loaded by the trusted inner process.  So the child's
+   environment is built from an ALLOW-LIST instead of being filtered: whatever
+   we forget to deny is simply not forwarded.
+
+   The list is deliberately tiny:
+     PATH                  we exec the sandbox wrapper and rocqchk by name
+     HOME, TMPDIR          scratch files, and enough of a home for the
+                           OCaml/Unix runtime not to misbehave
+     LANG, LC_ALL, LC_CTYPE, TERM, USER
+                           locale/tty/user niceties with no effect on loading
+     ROCQ_COMPARATOR_UNSAFE_NO_FILTER
+                           the test-only escape hatch (CONTRACTS.md); it is
+                           recorded in the verdict's "filter" check, so a run
+                           made with it set can never be mistaken for a normal
+                           one, and the fixture suite needs it in the child. *)
+let inner_env_allowlist =
+  [ "PATH"; "HOME"; "TMPDIR"; "LANG"; "LC_ALL"; "LC_CTYPE"; "TERM"; "USER";
+    "ROCQ_COMPARATOR_UNSAFE_NO_FILTER" ]
+
+let inner_env () : string array =
+  Unix.environment ()
+  |> Array.to_list
+  |> List.filter (fun kv ->
+      match String.index_opt kv '=' with
+      | None -> false
+      | Some i -> List.mem (String.sub kv 0 i) inner_env_allowlist)
+  |> Array.of_list
 
 (* --- locating the wrapper binaries --- *)
 

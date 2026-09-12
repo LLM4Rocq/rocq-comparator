@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "statement_mismatch",
+  "note": "The solution compiles and prints a well-formed {\"ok\":true,...} verdict line (verified: `rocq compile` really does put those two lines on stdout), but proves `True` instead of the challenge's statement. The outer process takes its verdict from <scratch>/verdict.json, written by the inner process after the pipeline has run, so the injected line cannot override the real one; the comparator's driver also swallows Rocq's feedback, so it does not even reach stdout here. Expect the honest rejection." }

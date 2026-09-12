@@ -212,9 +212,31 @@ let t_kills_the_group () =
   Alcotest.(check bool) "timed out" true r.RC.Sandbox.timed_out;
   Alcotest.(check bool) "without waiting for the grandchild" true (dt < 10.)
 
-let t_is_inner () =
-  Alcotest.(check string) "the marker's name" "ROCQ_COMPARATOR_INNER" RC.Sandbox.inner_marker;
-  Alcotest.(check bool) "the test process is not the inner one" false (RC.Sandbox.is_inner ())
+(* The inner process must not inherit anything that can redirect Rocq's load
+   path or plugin search (ROCQLIB, COQPATH, OCAMLPATH, XDG_*, ...): its
+   environment is built from an allow-list. *)
+let t_inner_env () =
+  let dangerous =
+    [ "ROCQLIB"; "COQLIB"; "ROCQPATH"; "COQPATH"; "OCAMLPATH"; "OCAMLFIND_CONF";
+      "CAML_LD_LIBRARY_PATH"; "XDG_DATA_HOME"; "XDG_DATA_DIRS"; "XDG_CONFIG_HOME";
+      "ROCQ_COLORS"; "LD_PRELOAD"; "DYLD_INSERT_LIBRARIES" ]
+  in
+  List.iter (fun k -> Unix.putenv k "/tmp/evil") dangerous;
+  Unix.putenv "ROCQ_COMPARATOR_UNSAFE_NO_FILTER" "1";
+  let env = Array.to_list (RC.Sandbox.inner_env ()) in
+  let key kv = match String.index_opt kv '=' with Some i -> String.sub kv 0 i | None -> kv in
+  let keys = List.map key env in
+  List.iter
+    (fun k ->
+       Alcotest.(check bool) (k ^ " is not forwarded") false (List.mem k keys))
+    dangerous;
+  Alcotest.(check bool) "PATH is forwarded" true (List.mem "PATH" keys);
+  Alcotest.(check bool) "the test-only escape hatch is forwarded" true
+    (List.mem "ROCQ_COMPARATOR_UNSAFE_NO_FILTER" keys);
+  (* no marker selects the inner side any more: only the --inner flag does *)
+  Unix.putenv "ROCQ_COMPARATOR_INNER" "1";
+  Alcotest.(check bool) "no inner marker is forwarded" false
+    (List.mem "ROCQ_COMPARATOR_INNER" (List.map key (Array.to_list (RC.Sandbox.inner_env ()))))
 
 let () =
   Random.self_init ();
@@ -235,4 +257,4 @@ let () =
           Alcotest.test_case "run" `Quick t_run;
           Alcotest.test_case "timeout" `Quick t_timeout;
           Alcotest.test_case "kills the process group" `Quick t_kills_the_group;
-          Alcotest.test_case "is_inner" `Quick t_is_inner ] ) ]
+          Alcotest.test_case "inner env allow-list" `Quick t_inner_env ] ) ]

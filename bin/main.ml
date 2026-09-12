@@ -173,27 +173,83 @@ let real_hooks (cfg : C.Config.t) : C.Check.hooks =
          | Some exe ->
            Some
              (fun ~top ~scratch ~loadpath_args ~deadline ->
+                (* The .vo was produced by a kernel running with these two
+                   global typing flags; rocqchk defaults them both to off, so
+                   without them it would re-check the library under different
+                   rules than the ones it was built with (and reject a
+                   perfectly good -impredicative-set development, or -- worse
+                   -- accept one while believing it checked something else).
+                   Config.loadpath_args does not carry them, so append them
+                   here; Check.run_inner's hook signature only passes the load
+                   path. *)
+                let flags =
+                  (if cfg.C.Config.impredicative_set then [ "-impredicative-set" ] else [])
+                  @ (if cfg.C.Config.indices_matter then [ "-indices-matter" ] else [])
+                in
                 match C.Rocqchk.save_vo ~top ~dir:scratch with
                 | Result.Error e -> Result.Error e
                 | Result.Ok _ ->
-                  C.Rocqchk.run ~rocqchk:exe ~top ~vo_dir:scratch ~loadpath_args ~deadline));
+                  C.Rocqchk.run ~rocqchk:exe ~top ~vo_dir:scratch
+                    ~loadpath_args:(loadpath_args @ flags) ~deadline));
     filter_status =
       (if no_filter then C.Verdict.Fail "DISABLED by ROCQ_COMPARATOR_UNSAFE_NO_FILTER"
        else C.Verdict.Ok) }
+
+(* The verdict is handed to the outer process through a file, not only through
+   stdout.
+
+   Why: the inner process compiles an adversarial file, and Rocq gives a
+   solution several ways to emit text (tactic messages, plugin output, an
+   [idtac "..."], anything a plugin writes with Printf).  If the outer process
+   recovered the verdict by scanning the child's stdout, a solution that
+   printed a well-formed {"ok":true,...} line would be attempting to dictate
+   the verdict.  The file is written by us, once, *after* the whole pipeline
+   has run, so anything the solution may have put there earlier is overwritten,
+   and the outer process prefers it over stdout. *)
+let verdict_file scratch = Filename.concat scratch "verdict.json"
+
+let write_verdict_file scratch (v : C.Verdict.t) =
+  try
+    let path = verdict_file scratch in
+    let tmp = path ^ ".tmp" in
+    let oc = open_out_bin tmp in
+    output_string oc (C.Verdict.to_string ~pretty:false v);
+    output_char oc '\n';
+    close_out oc;
+    (* rename is atomic: the outer process never sees a half-written verdict *)
+    Sys.rename tmp path
+  with _ ->
+    (* the outer process falls back to stdout and says so in the verdict *)
+    ()
+
+let read_verdict_file scratch : C.Verdict.t option =
+  match open_in_bin (verdict_file scratch) with
+  | exception _ -> None
+  | ic ->
+    let s = try really_input_string ic (in_channel_length ic) with _ -> "" in
+    close_in_noerr ic;
+    (match Yojson.Safe.from_string s with
+     | j -> ( match C.Verdict.of_json j with Result.Ok v -> Some v | Result.Error _ -> None)
+     | exception _ -> None)
 
 let run_inner ~pretty (config_path : string) =
   match C.Config.of_json_file config_path with
   | Result.Error m ->
     let v = C.Verdict.fail C.Verdict.Config_error m in
+    write_verdict_file (absolute (Filename.dirname config_path)) v;
     C.Verdict.print ~pretty v;
     C.Verdict.exit_code v
   | Result.Ok cfg ->
-    let scratch = Filename.dirname config_path in
+    (* absolute, because we are about to chdir into it: every later use of
+       [scratch] (the verdict file, the saved .vo) must keep pointing at the
+       same directory *)
+    let scratch = absolute (Filename.dirname config_path) in
     (* tactic caches (.lia.cache, .nra.cache) are written to the cwd: keep
        them in the scratch directory, which is also the only writable place
        inside the sandbox *)
     (try Sys.chdir scratch with Sys_error _ -> ());
     let v = C.Check.run_inner (real_hooks cfg) cfg ~scratch in
+    write_verdict_file scratch v;
     C.Verdict.print ~pretty v;
     C.Verdict.exit_code v
 
@@ -205,8 +261,11 @@ let tail n s =
   let len = String.length s in
   if len <= n then s else "..." ^ String.sub s (len - n) n
 
-(* The inner process prints exactly one JSON verdict; be liberal in case a
-   plugin wrote something to stdout too. *)
+(* Fallback only: used when <scratch>/verdict.json is missing (see
+   write_verdict_file).  The child's stdout is NOT trustworthy input -- a
+   solution can make the inner process emit text -- so this path is only ever
+   taken when the real verdict file could not be produced, and the verdict it
+   recovers is labelled as such in the detail. *)
 let parse_verdict (out : string) : C.Verdict.t option =
   let lines = String.split_on_char '\n' out in
   let rec go best = function
@@ -222,17 +281,6 @@ let parse_verdict (out : string) : C.Verdict.t option =
   go None lines
 
 let self_exe () = absolute Sys.executable_name
-
-let outer_env () =
-  let e = Unix.environment () in
-  let keep =
-    Array.to_list e
-    |> List.filter (fun kv ->
-        match String.index_opt kv '=' with
-        | None -> false
-        | Some i -> String.sub kv 0 i <> C.Sandbox.inner_marker)
-  in
-  Array.of_list ((C.Sandbox.inner_marker ^ "=1") :: keep)
 
 (* Run one solution through the sandboxed inner process. Never raises. *)
 let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict.t =
@@ -255,12 +303,32 @@ let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict
       C.Sandbox.wrap kind ~scratch
         ~argv:[ self_exe (); "check"; "--inner"; config_path ]
     in
-    C.Sandbox.run ~env:(outer_env ()) ~timeout_s:(cfg.C.Config.timeout_s +. 30.) argv
+    (* the inner process gets an allow-listed environment only: see
+       Sandbox.inner_env for why *)
+    C.Sandbox.run ~env:(C.Sandbox.inner_env ()) ~timeout_s:(cfg.C.Config.timeout_s +. 30.) argv
   with
   | exception e ->
     finally (C.Verdict.fail C.Verdict.Sandbox_error ("cannot start the sandbox: " ^ Printexc.to_string e))
   | r -> (
-    let v = parse_verdict r.C.Sandbox.stdout in
+    (* the verdict written by the inner process wins over anything on stdout *)
+    let from_file = read_verdict_file scratch in
+    let v =
+      match from_file with
+      | Some _ -> from_file
+      | None ->
+        (* degraded mode: say so, so that nobody reads an "ok" recovered from
+           a stream the solution can write to as if it were authoritative *)
+        Stdlib.Option.map
+          (fun (v : C.Verdict.t) ->
+             let note =
+               "the inner process did not write " ^ verdict_file scratch
+               ^ "; this verdict was recovered from its stdout"
+             in
+             { v with
+               C.Verdict.detail =
+                 Some (match v.C.Verdict.detail with Some d -> d ^ " [" ^ note ^ "]" | None -> note) })
+          (parse_verdict r.C.Sandbox.stdout)
+    in
     match v with
     | Some v when not r.C.Sandbox.timed_out -> finally v
     | _ ->
@@ -283,8 +351,14 @@ let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict
 (* ------------------------------------------------------------------ *)
 (* subcommands *)
 
+(* The inner side is selected by the [--inner] flag and by nothing else.  An
+   environment marker would be inherited: a caller (or a parent shell) with
+   ROCQ_COMPARATOR_INNER=1 in its environment would make the *outer* invocation
+   run the pipeline in-process, unsandboxed, which is exactly the situation the
+   sandbox exists to prevent.  The flag is passed by the outer process itself,
+   so it cannot be set by accident. *)
 let cmd_check (f : flags) ~inner ~pretty ~keep_scratch =
-  if inner || C.Sandbox.is_inner () then
+  if inner then
     match f.f_config with
     | Some path -> run_inner ~pretty path
     | None ->

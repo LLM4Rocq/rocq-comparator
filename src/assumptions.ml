@@ -2,12 +2,22 @@
 
    The assumption set is computed by the kernel-level traversal behind
    [Print Assumptions] and classified by constructor: names are never parsed
-   out of printed text, and axioms are matched fully qualified. *)
+   out of printed text, and axioms are matched fully qualified.
+
+   Every name handled here is the CANONICAL kernel name (see
+   src/rocqapi/kernel_assumptions.ml for why): [permitted_axioms] entries are
+   therefore matched against canonical names.  For library constants the user
+   name and the canonical name coincide, so a permitted-axiom list written the
+   obvious way ("Stdlib.Logic.Classical_Prop.classic") keeps working; only an
+   object re-exported under a different user name by [Include] is reported
+   under a name the solution could not choose. *)
 
 open Names
 
 type item =
   | Axiom of string
+  | Primitive of string
+  | Symbol of string
   | Variable of string
   | Positive of string
   | Guarded of string
@@ -16,6 +26,8 @@ type item =
 
 let item_kind = function
   | Axiom _ -> "axiom"
+  | Primitive _ -> "kernel primitive"
+  | Symbol _ -> "rewrite-rule symbol"
   | Variable _ -> "section variable"
   | Positive _ -> "inductive assumed positive"
   | Guarded _ -> "(co)fixpoint assumed guarded"
@@ -23,13 +35,16 @@ let item_kind = function
   | Uip _ -> "inductive using definitional UIP"
 
 let item_name = function
-  | Axiom s | Variable s | Positive s | Guarded s | Type_in_type s | Uip s -> s
+  | Axiom s | Primitive s | Symbol s | Variable s | Positive s | Guarded s | Type_in_type s
+  | Uip s -> s
 
 let of_constant (c : Constant.t) : item list =
   Kernel_assumptions.collect (GlobRef.ConstRef c)
   |> List.map (fun (k, n) ->
       match k with
       | `Axiom -> Axiom n
+      | `Primitive -> Primitive n
+      | `Symbol -> Symbol n
       | `Variable -> Variable n
       | `Positive -> Positive n
       | `Guarded -> Guarded n
@@ -64,6 +79,12 @@ let check ~(permitted : string list) (targets : (string * Constant.t) list)
        List.iter
          (fun it ->
             match it with
+            | Primitive _ ->
+              (* A kernel primitive (Uint63.add, PrimFloat.mul, ...) is not an
+                 assumption: the kernel gives it its meaning, and only a
+                 trusted library can declare one (the [Primitive] vernacular
+                 is denied to solutions).  Ignore it entirely. *)
+              ()
             | Axiom a ->
               if permitted_matches ~permitted a then used := a :: !used
               else if !error = None then begin
@@ -75,7 +96,7 @@ let check ~(permitted : string list) (targets : (string * Constant.t) list)
                 error := Some (Verdict.Forbidden_axiom, name ^ " depends on the section variable " ^ v);
                 update name (fun r -> { r with Verdict.target_detail = Some ("section variable " ^ v) })
               end
-            | Positive _ | Guarded _ | Type_in_type _ | Uip _ ->
+            | Symbol _ | Positive _ | Guarded _ | Type_in_type _ | Uip _ ->
               if !error = None then begin
                 error :=
                   Some (Verdict.Unsafe_flags,
