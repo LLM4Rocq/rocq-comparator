@@ -1,0 +1,5 @@
+{ "theorem_names": ["classical_dichotomy"], "top": "Challenge",
+  "permitted_axioms": [
+    "Stdlib.Reals.ClassicalDedekindReals.sig_forall_dec",
+    "Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep"
+  ] }

@@ -375,7 +375,7 @@ Config (JSON; all paths relative to the config file's directory):
   "definition_names": [],
   "permitted_axioms": ["Stdlib.Logic.Classical_Prop.classic",
                        "Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep",
-                       "@stdlib-reals"],
+                       "Stdlib.Reals.ClassicalDedekindReals.*"],
   "loadpath": [ {"Q": ["theories", "Comp"]}, {"R": ["dir", "Logical"]}, {"I": ["mlpath"]} ],
   "coqproject": "_CoqProject",
   "top": "Challenge",
@@ -392,49 +392,17 @@ Config (JSON; all paths relative to the config file's directory):
 ```
 
 Each entry of `permitted_axioms` is a fully qualified kernel name (e.g.
-`Stdlib.Logic.Classical_Prop.classic`), a prefix wildcard
-(`"Some.Dir.Path.*"`), or a **preset** `"@name"`, expanded by
-`src/presets.ml` before the rest of the config is used (an unknown `@name`
-is a `config_error`). **Correction to an earlier draft of this document:**
-`"Stdlib.Reals.Raxioms.*"` is *wrong* and permits nothing — in Rocq 9.x, `R`
-is built from Dedekind cuts and `Raxioms.v` proves its axiom-looking
-statements from `Stdlib.Reals.ClassicalDedekindReals` plus
-`FunctionalExtensionality` rather than declaring its own axioms; verified
-with `Print Assumptions` on `Rplus_comm`, `Rinv_l`, `archimed`,
-`completeness`, `Rlt_asym`, `sqrt_sqrt`, `exp_ln` (see `src/presets.ml` for
-the exact per-name evidence). The presets, every name verified empirically
-against this switch's rocq-core 9.2.0 / rocq-stdlib 9.1.0:
-
-- `@stdlib-classical`: `Stdlib.Logic.Classical_Prop.classic`,
-  `Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep`,
-  `Stdlib.Logic.PropExtensionality.propositional_extensionality`,
-  `Stdlib.Logic.ProofIrrelevance.proof_irrelevance`,
-  `Stdlib.Logic.Eqdep.Eq_rect_eq.eq_rect_eq`,
-  `Stdlib.Logic.ClassicalEpsilon.constructive_indefinite_description`,
-  `Stdlib.Logic.Description.constructive_definite_description`,
-  `Stdlib.Logic.ClassicalUniqueChoice.dependent_unique_choice`,
-  `Stdlib.Logic.RelationalChoice.relational_choice`,
-  `Stdlib.Sets.Ensembles.Extensionality_Ensembles` — each one verified to
-  depend on nothing but itself (a real kernel axiom); similarly-named
-  lemmas elsewhere (`Classical_Prop.proof_irrelevance`,
-  `PropExtensionality.proof_irrelevance`, `JMeq.JMeq_eq`,
-  `ClassicalEpsilon.epsilon`, `ClassicalEpsilon.constructive_definite_description`,
-  `ClassicalDescription.dependent_unique_choice`, `ClassicalChoice.choice`)
-  are derived from the axioms above and are deliberately not listed: they
-  are never the name the kernel actually reports as an assumption.
-- `@stdlib-reals`: `Stdlib.Reals.ClassicalDedekindReals.sig_forall_dec`,
-  `Stdlib.Reals.ClassicalDedekindReals.sig_not_dec`,
-  `Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep`,
-  `Stdlib.Logic.Classical_Prop.classic` — exactly what `Print Assumptions`
-  reports for `Rplus_comm`, `Rinv_l`, `archimed`, `completeness`,
-  `Rlt_asym`, `sqrt_sqrt`, `exp_ln`.
-- `@stdlib-all`: the union of the two above.
-
-No `@mathcomp-classical` preset is defined: `mathcomp-classical` /
-`mathcomp-analysis` (which declares `boolp`'s axioms) is not installed in
-this project's switch, and a preset for axiom names that cannot be verified
-against the running switch would violate the "observed, not guessed" rule
-above.
+`Stdlib.Logic.Classical_Prop.classic`) or a prefix wildcard
+(`"Some.Dir.Path.*"`). There is deliberately **no built-in list of "known"
+axioms to maintain**: the permitted set is stated per challenge, exactly as
+Lean's comparator does it. To discover the names a given challenge or a
+reference proof actually needs, run `rocq-comparator validate` (or
+`Print Assumptions`) and copy the fully qualified names it reports; the
+`validate` verdict lists them. (Note for anyone porting the old DESIGN
+example: `"Stdlib.Reals.Raxioms.*"` matches nothing — in Rocq 9.x `R` is
+built from Dedekind cuts, so the real Reals axioms live under
+`Stdlib.Reals.ClassicalDedekindReals.*` and
+`Stdlib.Logic.FunctionalExtensionality.*`.)
 
 `permit_challenge_axioms` (default `true`): every constant the challenge
 itself leaves `Undef` (a `Parameter`/`Axiom`, or a helper lemma left

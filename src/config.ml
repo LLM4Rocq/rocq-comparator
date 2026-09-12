@@ -198,32 +198,10 @@ let loadpath_of_json (j : Yojson.Safe.t) : (loadpath_entry list, string) result 
     go [] l
   | _ -> Result.Error "loadpath must be a list"
 
-(* Expand "@preset" entries of [permitted_axioms] (DESIGN.md section 10) via
-   Presets.expand; every other entry (a fully qualified kernel name, or a
-   "Prefix.*" wildcard) passes through unchanged. An unknown "@name" is a
-   config error rather than a silently-empty permitted list, since a typo
-   here would otherwise fail closed in the wrong direction (nothing
-   permitted) but a copy-paste of the wrong preset name would fail open in
-   the *right* direction and could go unnoticed until a specific proof
-   needed the real axiom name. *)
-let expand_axioms (names : string list) : (string list, string) result =
-  let rec go acc = function
-    | [] -> Result.Ok (List.rev acc)
-    | name :: tl ->
-      if String.length name > 0 && name.[0] = '@' then
-        match Presets.expand name with
-        | Some expanded -> go (List.rev_append expanded acc) tl
-        | None ->
-          Result.Error
-            (Printf.sprintf "unknown axiom preset %s (known: %s)" name Presets.known_names)
-      else go (name :: acc) tl
-  in
-  go [] names
-
 let of_json ~config_dir (j : Yojson.Safe.t) : (t, string) result =
   let ( let* ) = Result.bind in
   let* loadpath = match member "loadpath" j with None -> Result.Ok [] | Some l -> loadpath_of_json l in
-  let* permitted_axioms = expand_axioms (strings "permitted_axioms" j) in
+  let permitted_axioms = strings "permitted_axioms" j in
   let* sandbox = match member "sandbox" j with
     | None -> Result.Ok Auto
     | Some (`String s) -> sandbox_mode_of_string s

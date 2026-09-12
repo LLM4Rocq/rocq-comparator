@@ -1,0 +1,43 @@
+{
+    "workbench.colorCustomizations": {
+        "activityBar.activeBackground": "#e6b0e1",
+        "activityBar.activeBorder": "#15202b",
+        "activityBar.background": "#e6b0e1",
+        "activityBar.foreground": "#15202b",
+        "activityBar.inactiveForeground": "#15202b99",
+        "activityBarBadge.background": "#717926",
+        "activityBarBadge.foreground": "#e7e7e7",
+        "activityBarTop.activeBackground": "#e6b0e1",
+        "activityBarTop.activeBorder": "#15202b",
+        "activityBarTop.background": "#e6b0e1",
+        "activityBarTop.foreground": "#15202b",
+        "activityBarTop.inactiveForeground": "#15202b99",
+        "commandCenter.border": "#15202b99",
+        "commandCenter.foreground": "#15202b",
+        "sash.hoverBorder": "#e6b0e1",
+        "statusBar.background": "#da89d2",
+        "statusBar.debuggingBackground": "#da89d2",
+        "statusBar.debuggingForeground": "#15202b",
+        "statusBar.foreground": "#15202b",
+        "statusBarItem.hoverBackground": "#ce62c3",
+        "statusBarItem.remoteBackground": "#ecf0ce",
+        "statusBarItem.remoteForeground": "#15202b",
+        "titleBar.activeBackground": "#da89d2",
+        "titleBar.activeForeground": "#15202b",
+        "titleBar.inactiveBackground": "#da89d299",
+        "titleBar.inactiveForeground": "#15202b99"
+    },
+    "peacock.color": "#da89d2",
+    "files.exclude": {
+        "**/*.vo": true,
+        "**/*.vok": true,
+        "**/*.vos": true,
+        "**/*.aux": true,
+        "**/*.glob": true,
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true
+    }
+}
