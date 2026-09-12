@@ -117,13 +117,20 @@ let check ~(top : DirPath.t) ~(trusted_roots : string list)
     (fun dp ->
        if not (DirPath.equal dp top) then begin
          let name = DirPath.to_string dp in
+         (* [permitted_libraries] holds dirpath prefixes: a library is allowed
+            when one of them is a prefix of (or equal to) its dirpath.  Compare
+            structurally with Rocq's own [Libnames.is_dirpath_prefix_of] rather
+            than on the printed strings, so "Foo.Bar" cannot spuriously match
+            "Foo.Barbaz". *)
          (match permitted_libraries with
           | [] -> ()
           | l ->
-            if not (List.exists (fun p ->
-                String.equal name p
-                || (String.length name > String.length p
-                    && String.sub name 0 (String.length p + 1) = p ^ ".")) l)
+            let allowed p =
+              match Libnames.dirpath_of_string p with
+              | pdp -> Libnames.is_dirpath_prefix_of pdp dp
+              | exception _ -> false
+            in
+            if not (List.exists allowed l)
             then set Verdict.Library_violation ("the solution required " ^ name
                                                 ^ ", which is not in permitted_libraries"));
          match Loadpath.locate_absolute_library dp with

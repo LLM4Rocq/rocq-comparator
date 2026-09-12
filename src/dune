@@ -2,7 +2,6 @@
  (name rocq_comparator)
  (libraries
   unix
-  str
   threads.posix
   yojson
   rocq_comparator_rocqapi
