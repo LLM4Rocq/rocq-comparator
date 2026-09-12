@@ -17,10 +17,23 @@ type policy = {
   permitted_libraries : string list;
 }
 
-let default_plugins =
-  [ "ltac"; "ltac2"; "ltac2_ltac1"; "ssreflect"; "ssrmatching"; "micromega";
-    "ring"; "nsatz"; "zify"; "btauto"; "cc"; "firstorder"; "rtauto"; "tauto";
-    "derive"; "funind"; "number_string_notation" ]
+(* [VernacExtend] is how Rocq represents BOTH an ordinary tactic call (Ltac,
+   Ltac2, ssreflect, lia, ...) and a handful of extension *commands*, all as
+   one AST node tagged with the plugin that defined it.  We do not police
+   tactics: whatever proof term a tactic builds is checked by the kernel, and
+   any axiom or disabled kernel check it relies on is caught by the
+   assumptions and typing-flag checks (the two `[no filter]` fixtures show
+   those rejections happen with this filter switched off).  So instead of
+   maintaining a list of *blessed* tactic plugins, we deny only the extensions
+   that act outside the kernel.
+
+   Today that is just extraction: it writes source files and can drive an
+   external compiler, and has no place in a proof.  The in-process
+   code-loading vectors (`Declare ML Module`, `Load`, `Cd`) are dedicated
+   constructors, denied below; `Add LoadPath` / `Add ML Path` were removed in
+   Rocq 9.2.  A challenge may per-problem re-allow a denied plugin through
+   [permitted_plugins]. *)
+let denied_plugins = [ "extraction" ]
 
 let ok = Result.Ok ()
 let deny what = Result.Error what
@@ -105,10 +118,13 @@ let check_synterp p (e : synterp_vernac_expr) =
     | Lenient -> ok
     | Strict ->
       let plug = plugin_basename ext.ext_plugin in
-      if List.mem plug default_plugins || List.mem plug p.permitted_plugins
-         || List.mem ext.ext_plugin p.permitted_plugins
+      (* a per-problem override always wins *)
+      if List.mem plug p.permitted_plugins || List.mem ext.ext_plugin p.permitted_plugins
       then ok
-      else deny ("plugin command from " ^ ext.ext_plugin ^ " (" ^ ext.ext_entry ^ ")"))
+      else if List.mem plug denied_plugins then
+        deny ("command from the " ^ plug ^ " plugin (" ^ ext.ext_entry
+              ^ "), which acts outside the kernel")
+      else ok)
   (* allowed *)
   | VernacReservedNotation _ | VernacNotation _ | VernacDeclareCustomEntry _
   | VernacBeginSection _ | VernacEndSegment _ | VernacImport _

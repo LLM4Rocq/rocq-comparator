@@ -93,7 +93,7 @@ Anomalies and `Sys.Break` are re-raised (the caller maps them to
 ```ocaml
 type mode = Strict | Lenient
 type policy = { mode : mode; permitted_plugins : string list; permitted_libraries : string list }
-val default_plugins : string list
+val denied_plugins : string list  (* plugins denied in Strict mode; today just "extraction" *)
 val check : policy -> Vernacexpr.vernac_control -> (unit, string) result
 (* Error "Declare ML Module" / "Unset Guard Checking" / "plugin extraction" / ... — short, names the offending command *)
 val classify_option : string list -> [ `Allow | `Deny ]     (* option name path, e.g. ["Guard"; "Checking"] *)

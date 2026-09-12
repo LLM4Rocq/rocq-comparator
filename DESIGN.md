@@ -282,12 +282,16 @@ Denied only in `Strict` mode (in addition): `VernacSetOption`/`VernacAddOption`/
 `VernacInclude` is allowed too — module tricks are caught at the kernel level
 (the target's canonical constant is what gets checked); `VernacAbort` allowed
 (the target will simply be missing); `VernacProofMode` allowed;
-`VernacExtend (ext, _)`: allowed iff `ext.ext_plugin` (or the extension name
-prefix, check the 9.2 `Vernacexpr.extend_name` record) is in the plugin
-allow-list: `ltac`, `ltac2`, `ltac2_ltac1`, `ssreflect`, `ssrmatching`,
-`micromega`, `ring`, `nsatz`, `zify`, `btauto`, `cc`, `firstorder`, `rtauto`,
-`tauto`, `derive`, `funind`, `number_string_notation`; everything else
-(notably `extraction`, `elpi`, unknown plugins) denied unless listed in
+`VernacExtend (ext, _)`: this one node is both every tactic call and a few
+extension *commands*. Tactics are not policed — the kernel checks whatever
+term they build, and a disabled check or stray axiom is caught by the
+assumptions / typing-flag checks — so there is no allow-list of blessed
+plugins. Instead `Strict` denies only the extensions that act *outside* the
+kernel: the `denied_plugins` set, today just `extraction` (writes source
+files, can drive an external compiler). Every other extension is allowed. The
+in-process code-loading vectors (`Declare ML Module`, `Load`, `Cd`) are
+dedicated constructors denied above; `Add LoadPath` / `Add ML Path` no longer
+exist in Rocq 9.2. A challenge may re-allow a denied plugin per problem via
 `permitted_plugins`. Attributes: `bypass_check(...)` denied in `Strict` mode
 (also caught later by the typing-flag check).
 

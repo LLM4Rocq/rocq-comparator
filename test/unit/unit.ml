@@ -228,11 +228,16 @@ let t_plugins () =
   Alcotest.(check bool) "ltac is allowed" false (denied strict (ext "rocq-runtime.plugins.ltac"));
   Alcotest.(check bool) "bare ltac2 is allowed" false (denied strict (ext "ltac2"));
   Alcotest.(check bool) "ssreflect is allowed" false (denied strict (ext "coq-core.plugins.ssreflect"));
-  Alcotest.(check bool) "extraction is denied" true
+  Alcotest.(check bool) "extraction is denied (writes files, acts outside the kernel)" true
     (denied strict (ext "rocq-runtime.plugins.extraction"));
-  Alcotest.(check bool) "unknown plugins are denied" true (denied strict (ext "coq-elpi.elpi"));
-  Alcotest.(check bool) "permitted_plugins opens the door" false
-    (denied { strict with RC.Filter.permitted_plugins = [ "elpi" ] } (ext "coq-elpi.elpi"));
+  (* every other extension -- a tactic or a benign command -- is allowed: the
+     kernel checks whatever term it produces, so there is no blessed-plugin
+     list to maintain *)
+  Alcotest.(check bool) "a non-extraction plugin (elpi) is allowed" false
+    (denied strict (ext "coq-elpi.elpi"));
+  Alcotest.(check bool) "permitted_plugins can force-allow even extraction" false
+    (denied { strict with RC.Filter.permitted_plugins = [ "extraction" ] }
+       (ext "rocq-runtime.plugins.extraction"));
   Alcotest.(check bool) "the challenge may use any plugin" false (denied lenient (ext "coq-elpi.elpi"))
 
 let t_allowed () =

@@ -165,9 +165,11 @@ Every field, with its default (from `src/config.ml`):
   re-checked as safety flags on every solution-side constant (both files
   necessarily share them, since they are process-wide).
 - `noinit`: compile with `-noinit` (no prelude); rarely wanted.
-- `permitted_plugins`: extra `VernacExtend` plugin names allowed in the
-  solution beyond the built-in allow-list (`ltac`, `ltac2`, `ssreflect`,
-  `micromega`, `ring`, `firstorder`, ... — see `src/filter.ml`).
+- `permitted_plugins`: plugins to re-allow in the solution even though they
+  are in the filter's deny set (today only `extraction`). Ordinary tactic
+  plugins (`ltac`, `ssreflect`, `lia`, ...) are allowed by default and need
+  not be listed; the filter denies only extensions that act outside the
+  kernel, not tactics (see `src/filter.ml`).
 - `permitted_libraries`: if non-empty, dirpath prefixes the solution is
   allowed to `Require`, checked both on the parsed `Require` and post hoc
   against `Library.loaded_libraries ()`.
@@ -317,7 +319,10 @@ pressure.
    a *strict* filter — every `Vernacexpr` constructor is classified with a
    default-deny match, exhaustive by construction (`[@warning "+8"]`), so a
    new Rocq constructor breaks the build rather than silently passing
-   through; a plugin allow-list gates `VernacExtend`.
+   through. `VernacExtend` (which is both every tactic call and a few
+   extension commands) is allowed except for a small deny set of
+   outside-the-kernel plugins (today just `extraction`); tactics are left to
+   the kernel.
 4. The two environments are compared **at the kernel level**: statements
    and their closures as `Constr.t` trees (universes compared modulo a
    bijective renaming plus constraint entailment, never by pretty-printing);
