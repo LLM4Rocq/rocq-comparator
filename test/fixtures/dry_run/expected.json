@@ -1,0 +1,8 @@
+{ "validate": true,
+  "exit_code": 0,
+  "v_ok": true,
+  "targets": [
+    { "name": "add_n_0", "resolves": true, "kind": "theorem", "type_contains": "n + 0 = n" },
+    { "name": "large", "resolves": true, "kind": "definition_hole", "type_contains": "nat" }
+  ],
+  "challenge_axioms_contains": ["Challenge.oracle"] }

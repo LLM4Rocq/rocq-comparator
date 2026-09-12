@@ -8,7 +8,9 @@
 open Cmdliner
 module C = Rocq_comparator
 
-let version = "0.1.0"
+(* Single source of truth: the version lives in the library so the CLI banner
+   and the reproducibility manifest can never disagree. *)
+let version = C.Verdict.comparator_version
 
 let ( let* ) = Result.bind
 
@@ -46,24 +48,25 @@ type flags = {
 
 let absolute p = if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p
 
-let build_config (f : flags) : (C.Config.t, string) result =
+(* [require_solution] is false for the [validate] subcommand, which judges no
+   solution and only compiles the challenge. *)
+let build_config ?(require_solution = true) (f : flags) : (C.Config.t, string) result =
   let* base =
     match f.f_config with
     | Some path -> C.Config.of_json_file path
     | None -> Result.Ok { C.Config.default with C.Config.config_dir = Sys.getcwd () }
   in
-  (* flags are relative to the cwd, config entries to the config's directory *)
-  let cwd = Sys.getcwd () in
+  (* flags are relative to the cwd (via [absolute]), config entries to the
+     config's directory *)
   let c = base in
   let c =
     match f.f_challenge with
-    | Some p ->
-      { c with C.Config.challenge = (if Filename.is_relative p then Filename.concat cwd p else p) }
+    | Some p -> { c with C.Config.challenge = absolute p }
     | None -> c
   in
   let c =
     match f.f_solution with
-    | Some p -> { c with C.Config.solution = (if Filename.is_relative p then Filename.concat cwd p else p) }
+    | Some p -> { c with C.Config.solution = absolute p }
     | None -> c
   in
   let c = if f.f_theorems = [] then c else { c with C.Config.theorem_names = f.f_theorems } in
@@ -99,7 +102,7 @@ let build_config (f : flags) : (C.Config.t, string) result =
     Result.Error "no target: pass --theorem NAME (or theorem_names in the config file)"
   else if not (Sys.file_exists (C.Config.challenge_path c)) then
     Result.Error ("challenge file not found: " ^ C.Config.challenge_path c)
-  else if not (Sys.file_exists (C.Config.solution_path c)) then
+  else if require_solution && not (Sys.file_exists (C.Config.solution_path c)) then
     Result.Error ("solution file not found: " ^ C.Config.solution_path c)
   else Result.Ok c
 
@@ -117,17 +120,13 @@ let resolved_config (c : C.Config.t) : C.Config.t =
 (* scratch directories *)
 
 let make_scratch () =
-  let base = Filename.get_temp_dir_name () in
-  let rec go n =
-    if n > 100 then failwith "cannot create a scratch directory"
-    else
-      let d =
-        Filename.concat base
-          (Printf.sprintf "rocq-comparator-%d-%d" (Unix.getpid ()) (Random.int 1_000_000))
-      in
-      match Unix.mkdir d 0o700 with () -> d | exception Unix.Unix_error _ -> go (n + 1)
-  in
-  go 0
+  (* Filename.temp_dir already does exactly what this used to hand-roll: it
+     creates a fresh, private directory under the system temp dir, retrying
+     names until it finds an unused one.  We pass [~perms:0o700] explicitly --
+     it is also the library default -- because the sandbox relies on the
+     scratch dir being private to this user, and that guarantee should be
+     visible at the call site rather than an inherited default. *)
+  Filename.temp_dir ~perms:0o700 "rocq-comparator-" ""
 
 let rec rm_rf path =
   match Unix.lstat path with
@@ -232,6 +231,40 @@ let read_verdict_file scratch : C.Verdict.t option =
      | j -> ( match C.Verdict.of_json j with Result.Ok v -> Some v | Result.Error _ -> None)
      | exception _ -> None)
 
+(* --- validate (dry-run) side ---------------------------------------------
+
+   The validate subcommand uses the same outer/inner sandbox split as check: an
+   inner process compiles the challenge and writes its report to a file the
+   outer process reads back, so nothing the challenge might print to stdout can
+   be mistaken for the report. *)
+
+let fail_validation msg : C.Verdict.validation =
+  { C.Verdict.v_ok = false; v_error = Some msg; v_rocq_version = ""; v_top = "";
+    v_targets = []; v_challenge_axioms = []; v_manifest = None }
+
+let validation_file scratch = Filename.concat scratch "validation.json"
+
+let write_validation_file scratch (v : C.Verdict.validation) =
+  try
+    let path = validation_file scratch in
+    let tmp = path ^ ".tmp" in
+    let oc = open_out_bin tmp in
+    output_string oc (C.Verdict.validation_to_string ~pretty:false v);
+    output_char oc '\n';
+    close_out oc;
+    Sys.rename tmp path
+  with _ -> ()
+
+let read_validation_file scratch : C.Verdict.validation option =
+  match open_in_bin (validation_file scratch) with
+  | exception _ -> None
+  | ic ->
+    let s = try really_input_string ic (in_channel_length ic) with _ -> "" in
+    close_in_noerr ic;
+    (match Yojson.Safe.from_string s with
+     | j -> ( match C.Verdict.validation_of_json j with Result.Ok v -> Some v | Result.Error _ -> None)
+     | exception _ -> None)
+
 let run_inner ~pretty (config_path : string) =
   match C.Config.of_json_file config_path with
   | Result.Error m ->
@@ -252,6 +285,21 @@ let run_inner ~pretty (config_path : string) =
     write_verdict_file scratch v;
     C.Verdict.print ~pretty v;
     C.Verdict.exit_code v
+
+let run_validate_inner ~pretty (config_path : string) =
+  match C.Config.of_json_file config_path with
+  | Result.Error m ->
+    let v = fail_validation m in
+    write_validation_file (absolute (Filename.dirname config_path)) v;
+    C.Verdict.print_validation ~pretty v;
+    C.Verdict.validation_exit_code v
+  | Result.Ok cfg ->
+    let scratch = absolute (Filename.dirname config_path) in
+    (try Sys.chdir scratch with Sys_error _ -> ());
+    let v = C.Check.validate_inner (real_hooks cfg) cfg in
+    write_validation_file scratch v;
+    C.Verdict.print_validation ~pretty v;
+    C.Verdict.validation_exit_code v
 
 (* ------------------------------------------------------------------ *)
 (* outer side *)
@@ -348,6 +396,45 @@ let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict
              (Printf.sprintf "the sandboxed process exited with %d without printing a verdict: %s"
                 r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout)))))
 
+(* Run the challenge alone through the sandboxed validate inner process.
+   Mirrors run_outer_once, but there is no per-solution machinery and the
+   result type is a validation report rather than a verdict. Never raises. *)
+let run_validate_outer (cfg : C.Config.t) ~keep_scratch : C.Verdict.validation =
+  let kind, reason = C.Sandbox.detect cfg.C.Config.sandbox in
+  if kind = C.Sandbox.No_sandbox && cfg.C.Config.sandbox = C.Config.Auto then
+    prerr_endline ("rocq-comparator: warning: " ^ reason);
+  let scratch = make_scratch () in
+  let cleanup () = if not keep_scratch then rm_rf scratch in
+  match
+    let cfg = resolved_config cfg in
+    let config_path = Filename.concat scratch "config.json" in
+    let oc = open_out_bin config_path in
+    Yojson.Safe.to_channel oc (C.Config.to_json cfg);
+    output_char oc '\n';
+    close_out oc;
+    let argv =
+      C.Sandbox.wrap kind ~scratch ~argv:[ self_exe (); "validate"; "--inner"; config_path ]
+    in
+    C.Sandbox.run ~env:(C.Sandbox.inner_env ()) ~timeout_s:(cfg.C.Config.timeout_s +. 30.) argv
+  with
+  | exception e ->
+    cleanup ();
+    fail_validation ("cannot start the sandbox: " ^ Printexc.to_string e)
+  | r ->
+    let v = read_validation_file scratch in
+    cleanup ();
+    (match v with
+     | Some v when not r.C.Sandbox.timed_out -> v
+     | _ ->
+       if r.C.Sandbox.timed_out then
+         fail_validation
+           (Printf.sprintf "no validation report after %.0fs (the sandboxed process was killed)"
+              (cfg.C.Config.timeout_s +. 30.))
+       else
+         fail_validation
+           (Printf.sprintf "the sandboxed process exited with %d without a validation report: %s"
+              r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout))))
+
 (* ------------------------------------------------------------------ *)
 (* subcommands *)
 
@@ -375,6 +462,24 @@ let cmd_check (f : flags) ~inner ~pretty ~keep_scratch =
       C.Verdict.print ~pretty v;
       C.Verdict.exit_code v
 
+let cmd_validate (f : flags) ~inner ~pretty ~keep_scratch =
+  if inner then
+    match f.f_config with
+    | Some path -> run_validate_inner ~pretty path
+    | None ->
+      prerr_endline "rocq-comparator: --inner needs a config file";
+      2
+  else
+    match build_config ~require_solution:false f with
+    | Result.Error m ->
+      let v = fail_validation m in
+      C.Verdict.print_validation ~pretty v;
+      C.Verdict.validation_exit_code v
+    | Result.Ok cfg ->
+      let v = run_validate_outer cfg ~keep_scratch in
+      C.Verdict.print_validation ~pretty v;
+      C.Verdict.validation_exit_code v
+
 let cmd_batch (f : flags) ~solutions ~jobs ~pretty ~keep_scratch =
   match build_config { f with f_solution = (match solutions with s :: _ -> Some s | [] -> None) } with
   | Result.Error m ->
@@ -384,10 +489,7 @@ let cmd_batch (f : flags) ~solutions ~jobs ~pretty ~keep_scratch =
     let sols = Array.of_list solutions in
     let n = Array.length sols in
     let results = Array.make n None in
-    let cfg_for i =
-      let p = sols.(i) in
-      { base with C.Config.solution = (if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p) }
-    in
+    let cfg_for i = { base with C.Config.solution = absolute sols.(i) } in
     let run_one i = results.(i) <- Some (run_outer_once ~quiet:true (cfg_for i) ~keep_scratch) in
     if jobs <= 1 then
       for i = 0 to n - 1 do
@@ -421,13 +523,27 @@ let cmd_batch (f : flags) ~solutions ~jobs ~pretty ~keep_scratch =
            | None -> ())
         results
     end;
-    (* exit 0 as long as every solution produced a verdict *)
-    let infra =
-      Array.exists
-        (function Some (v : C.Verdict.t) -> C.Verdict.exit_code v = 2 | None -> true)
-        results
+    (* One tagged summary line AFTER all per-solution lines, so a harness can
+       compute pass@k in a single pass without re-parsing every solution. The
+       per-solution lines are unchanged; the summary carries "summary":true so
+       a reader (and our own fixture runner) can tell it apart. *)
+    let count pred =
+      Array.fold_left (fun a -> function Some v -> if pred v then a + 1 else a | None -> a) 0 results
     in
-    if infra then 2 else 0
+    let n_ok = count (fun (v : C.Verdict.t) -> v.C.Verdict.ok) in
+    let n_exit2 = count (fun v -> C.Verdict.exit_code v = 2) in
+    let n_missing = Array.fold_left (fun a r -> if r = None then a + 1 else a) 0 results in
+    let n_infra = n_exit2 + n_missing in
+    let summary =
+      `Assoc
+        [ ("summary", `Bool true); ("total", `Int n); ("ok", `Int n_ok);
+          ("rejected", `Int (n - n_ok - n_infra)); ("infra_errors", `Int n_infra) ]
+    in
+    print_string (Yojson.Safe.to_string summary);
+    print_newline ();
+    flush stdout;
+    (* exit 0 as long as every solution produced a verdict *)
+    if n_infra > 0 then 2 else 0
 
 let cmd_sandbox_info (mode : string option) =
   let m =
@@ -520,6 +636,21 @@ let check_cmd =
   Cmd.v (Cmd.info "check" ~doc ~man)
     Term.(const run $ flags_term $ inner_arg $ pretty_arg $ json_arg $ keep_scratch_arg)
 
+let validate_cmd =
+  let doc = "Sanity-check a challenge before publishing it (no solution needed)." in
+  let man =
+    [ `S Manpage.s_description;
+      `P "Compiles the challenge alone, inside the same OS sandbox as $(b,check), extracts the \
+          specification, and prints one JSON object describing each target (whether it resolves, \
+          its kind, and its pretty-printed type) and the axioms the challenge itself declares.";
+      `P "No solution is needed or read. Exit code: 0 if the challenge compiled and every target \
+          resolved, 2 otherwise.";
+      `Blocks man_loadpath ]
+  in
+  let run f inner pretty _json keep_scratch = cmd_validate f ~inner ~pretty ~keep_scratch in
+  Cmd.v (Cmd.info "validate" ~doc ~man)
+    Term.(const run $ flags_term $ inner_arg $ pretty_arg $ json_arg $ keep_scratch_arg)
+
 let batch_cmd =
   let doc = "Judge several solutions against one challenge (JSON lines)." in
   let man =
@@ -563,7 +694,7 @@ let main_cmd =
   in
   Cmd.group
     (Cmd.info "rocq-comparator" ~version ~doc ~man)
-    [ check_cmd; batch_cmd; sandbox_info_cmd; version_cmd ]
+    [ check_cmd; validate_cmd; batch_cmd; sandbox_info_cmd; version_cmd ]
 
 let () =
   Random.self_init ();

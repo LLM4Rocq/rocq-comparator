@@ -1,0 +1,3 @@
+{ "theorem_names": ["add_0_n", "add_n_0"],
+  "top": "Challenge", "timeout_s": 120, "rocqchk": false,
+  "note": "two theorems; solution proves the first, admits the second" }

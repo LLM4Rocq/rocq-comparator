@@ -58,6 +58,50 @@ let dirpath_of_string s =
   | dp -> dp
   | exception _ -> DirPath.make [ Id.of_string_soft s ]
 
+(* Reproducibility manifest (DESIGN-audit tier 4, feature 1).
+
+   Snapshots the ambient inputs the run used and would otherwise discard: the
+   OCaml compiler version, the comparator version, the trusted load-path roots,
+   and every loaded .vo with its on-disk digest.  Called after a library has
+   compiled, so [Library.loaded_libraries ()] reflects everything the run
+   pulled in.  Deterministic: libraries and roots are sorted, digests are hex.
+   Any I/O failure degrades to an empty path/digest rather than aborting -- the
+   manifest is an audit aid, never a gate. *)
+let build_manifest ~(trusted_roots : string list) : Verdict.manifest =
+  let libs =
+    List.map
+      (fun dp ->
+         let name = DirPath.to_string dp in
+         let path, digest =
+           match Loadpath.locate_absolute_library dp with
+           | Result.Ok p ->
+             let d =
+               if Sys.file_exists p then (try Digest.to_hex (Digest.file p) with _ -> "")
+               else ""
+             in
+             (p, d)
+           | Result.Error _ -> ("", "")
+           | exception _ -> ("", "")
+         in
+         { Verdict.lib_name = name; lib_path = path; lib_digest = digest })
+      (Library.loaded_libraries ())
+  in
+  let libs =
+    List.sort (fun a b -> String.compare a.Verdict.lib_name b.Verdict.lib_name) libs
+  in
+  { Verdict.ocaml_version = Sys.ocaml_version;
+    comparator_version = Verdict.comparator_version;
+    trusted_roots = List.sort_uniq String.compare trusted_roots;
+    libraries = libs }
+
+(* Pretty-print a kernel type for the human-facing validate report.  Never
+   raises: a term that cannot be externalised prints as a placeholder. *)
+let pp_type (env : Environ.env) (c : Constr.t) : string =
+  try
+    let sigma = Evd.from_env env in
+    Pp.string_of_ppcmds (Printer.pr_ltype_env env sigma c)
+  with _ -> "<unprintable>"
+
 let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
   let checks = Hashtbl.create 16 in
   let timing = ref [] in
@@ -70,7 +114,13 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
   let finish ?(targets = []) reason detail =
     Verdict.fail ~checks:(build_checks checks) ~targets ~timing:(List.rev !timing) reason detail
   in
-  let with_version (v : Verdict.t) = { v with Verdict.rocq_version = Driver.rocq_version () } in
+  (* The manifest is only meaningful once a library has actually loaded its
+     dependencies, so it is filled in after the solution compiles and stamped
+     onto every verdict returned from that point on. *)
+  let manifest_ref = ref None in
+  let with_version (v : Verdict.t) =
+    { v with Verdict.rocq_version = Driver.rocq_version (); manifest = !manifest_ref }
+  in
   let deadline = Unix.gettimeofday () +. cfg.Config.timeout_s in
   (* A signature-style challenge ("Parameter P : Prop.", "Axiom ax : ...",
      "Lemma helper : X. Admitted.") is part of the specification: the target's
@@ -142,6 +192,7 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
           with_version (finish Verdict.Forbidden_command (what ^ " (" ^ describe_error e ^ ")"))
         | Driver.Done _ ->
           Hashtbl.replace checks "solution_compile" Verdict.Ok;
+          manifest_ref := Some (build_manifest ~trusted_roots:(h.trusted_roots cfg));
           let env_s = Global.env () in
           let joined = Safe_typing.is_joined_environment (Global.safe_env ()) in
           Hashtbl.replace checks "joined"
@@ -245,3 +296,88 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
     let e, info = Exninfo.capture e in
     with_version
       (finish Verdict.Internal_error (Pp.string_of_ppcmds (CErrors.iprint (e, info))))
+
+(* Dry-run / validate-challenge (DESIGN-audit tier 4, feature 2).
+
+   Compiles ONLY the challenge (with the lenient filter, since the challenge is
+   trusted input just as in [run_inner]), extracts the SPEC and reports what an
+   operator is about to publish -- each target's resolution, kind and type, and
+   the axioms the challenge declares -- without needing a solution.  It reuses
+   the same inner-side machinery ([Driver.init], the lenient filter,
+   [Spec.extract], [build_manifest]); [bin/main.ml] runs it inside the same
+   sandbox as [run_inner]. *)
+let validate_inner (h : hooks) (cfg : Config.t) : Verdict.validation =
+  let rocq_version = Driver.rocq_version () in
+  let top_name = Config.top_name cfg in
+  let top = dirpath_of_string top_name in
+  let mk ?(ok = false) ?error ?(targets = []) ?(axioms = []) ?manifest () =
+    { Verdict.v_ok = ok; v_error = error; v_rocq_version = rocq_version; v_top = top_name;
+      v_targets = targets; v_challenge_axioms = axioms; v_manifest = manifest }
+  in
+  try
+    Driver.init ~args:(Config.rocq_args cfg);
+    let lenient vc =
+      h.filter ~strict:false ~permitted_plugins:cfg.Config.permitted_plugins
+        ~permitted_libraries:[] vc
+    in
+    match Driver.compile_library ~filter:lenient ~top ~file:(Config.challenge_path cfg) () with
+    | Driver.Error e | Driver.Parse_error e ->
+      mk ~error:("the challenge does not compile: " ^ describe_error e) ()
+    | Driver.Timeout t -> mk ~error:("the challenge timed out on: " ^ t) ()
+    | Driver.Forbidden (what, e) ->
+      mk ~error:("the challenge uses a command the comparator cannot allow (" ^ what ^ "): "
+                 ^ describe_error e) ()
+    | Driver.Done _ -> (
+      let env = Global.env () in
+      let manifest = build_manifest ~trusted_roots:(h.trusted_roots cfg) in
+      match
+        Spec.extract ~top ~theorem_names:cfg.Config.theorem_names
+          ~definition_names:cfg.Config.definition_names
+          ~permitted_axioms:cfg.Config.permitted_axioms
+          ~permit_challenge_axioms:cfg.Config.permit_challenge_axioms
+      with
+      | Result.Ok spec ->
+        let targets =
+          List.map
+            (fun (t : Spec.target) ->
+               { Verdict.vt_name = t.Spec.name; vt_resolves = true;
+                 vt_kind = (if t.Spec.hole then "definition_hole" else "theorem");
+                 vt_type = Some (pp_type env t.Spec.typ) })
+            spec.Spec.targets
+        in
+        let axioms =
+          List.sort_uniq String.compare
+            (List.map (fun (c, _) -> Names.Constant.to_string c) spec.Spec.challenge_axioms)
+        in
+        mk ~ok:true ~targets ~axioms ~manifest ()
+      | Result.Error (_, d) ->
+        (* SPEC extraction failed (usually a target that does not resolve).
+           Report per-name resolution so the operator sees which names are the
+           problem; the axiom list needs a clean SPEC, so it is left empty. *)
+        let declared =
+          List.map (fun n -> (n, false)) cfg.Config.theorem_names
+          @ List.map (fun n -> (n, true)) cfg.Config.definition_names
+        in
+        let unresolved name =
+          { Verdict.vt_name = name; vt_resolves = false; vt_kind = "unresolved"; vt_type = None }
+        in
+        let targets =
+          List.map
+            (fun (name, hole) ->
+               match Spec.resolve_name ~top name with
+               | Result.Ok kn when Spec.is_local ~top (Names.Constant.modpath kn) -> (
+                 match Environ.lookup_constant_opt kn env with
+                 | Some cb ->
+                   { Verdict.vt_name = name; vt_resolves = true;
+                     vt_kind = (if hole then "definition_hole" else "theorem");
+                     vt_type = Some (pp_type env cb.Declarations.const_type) }
+                 | None -> unresolved name)
+               | _ -> unresolved name)
+            declared
+        in
+        mk ~error:d ~targets ~manifest ())
+  with
+  | Sys.Break -> mk ~error:"interrupted" ()
+  | e ->
+    let e, info = Exninfo.capture e in
+    mk ~error:(Pp.string_of_ppcmds (CErrors.iprint (e, info))) ()
