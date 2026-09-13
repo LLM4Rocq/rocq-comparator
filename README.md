@@ -16,21 +16,15 @@ Guarantee (3) means the proof term type-checks, no part of it was left
 deferred or unchecked, and by default the whole library is re-checked by
 `rocqchk`, Rocq's separate checker.
 
-**Definition holes are weaker, and here is why.** A challenge can leave a
-definition unfilled for the solution to supply, and then state a theorem about
-it. For a name in `definition_names`, the comparator checks that the supplied
-definition has the same name, type, and universes as the hole and uses only
-permitted axioms. It does not check that the definition means what the author
-intended, and it cannot. Say a challenge leaves `X : Prop` open and asks for a
-proof of `P <-> X`. A solution can define `X := P` and close the theorem by
-reflexivity. That type-checks and is accepted, but it answers nothing. So a
-definition-hole result tells you the shapes line up, not that the problem was
-solved. Review those by hand or with a second checker.
-
 This rests on the same assumptions as Lean's comparator: the load path and
 challenge are trusted, no adversarial file was compiled earlier into them, the
 sandbox holds, the Rocq kernel is correct, and you do not run as root. See
 `DESIGN.md` for the threat model and pipeline.
+
+**Status.** This is a prototype. It was produced by Claude Fable 5.1
+(Anthropic) under the direction of the project authors, and is inspired by the
+[Lean comparator](https://github.com/leanprover/comparator). Expect rough
+edges, and read `DESIGN.md` before relying on it for anything that matters.
 
 ## Install
 
