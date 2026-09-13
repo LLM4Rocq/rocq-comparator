@@ -136,7 +136,7 @@ error (nothing judged). `batch` exits `0` if every solution produced a verdict,
 
 By default (`axiom_policy: "imported"`) the solution may use any axiom that
 comes from a library the challenge imports. A challenge that opens `Require
-Import Reals` or `From mathcomp Require Import ... analysis ...` accepts that
+Import Reals` or `From mathcomp Require Import classical_sets` accepts that
 library's axioms (functional extensionality, choice, the classical Reals
 axioms, and so on) with nothing to list. What is still rejected is an axiom the
 solution declares itself, or one from a library the challenge did not import.
