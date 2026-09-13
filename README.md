@@ -77,8 +77,10 @@ Every flag has a config-file equivalent; flags win when both are given. `check`
               "joined": "ok", "statements": "ok", "closure": "ok", "axioms": "ok",
               "hygiene": "ok", "libraries": "ok", "rocqchk": "ok" },
   "manifest": { "ocaml_version": "5.5.1", "comparator_version": "0.1.0",
-                "trusted_roots": ["/…/_opam/lib/coq/user-contrib"],
-                "libraries": [ {"name":"Corelib.Init.Logic","path":"…","digest":"…"} ] },
+                "trusted_roots": ["/home/you/proj/_opam/lib/coq/user-contrib"],
+                "libraries": [ {"name":"Corelib.Init.Logic",
+                                "path":"/home/you/proj/_opam/lib/coq/theories/Init/Logic.vo",
+                                "digest":"9f86d081884c7d65"} ] },
   "timing_s": { "init": 0.02, "challenge": 0.11, "solution": 0.10, "compare": 0.02, "rocqchk": 0.13 } }
 ```
 
