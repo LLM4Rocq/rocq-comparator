@@ -22,9 +22,9 @@ sandbox holds, the Rocq kernel is correct, and you do not run as root. See
 `DESIGN.md` for the threat model and pipeline.
 
 **Status.** This is a prototype. It was produced by Claude Fable 5.1
-(Anthropic) under the direction of the project authors, and is inspired by the
+under the direction of the project authors, and is inspired by the
 [Lean comparator](https://github.com/leanprover/comparator). Expect rough
-edges, and read `DESIGN.md` before relying on it for anything that matters.
+edges...
 
 ## Install
 
