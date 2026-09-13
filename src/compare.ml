@@ -305,6 +305,19 @@ let check_universe_entailment ~(top : DirPath.t)
 
 let unchecked name = { Verdict.name; status = "unchecked"; assumptions = []; target_detail = None }
 
+(* Both statements for the verdict: their pretty forms and, when those coincide
+   (a difference in universes or kernel names is invisible to the printer), the
+   kernel-level forms as well. *)
+let type_diff_detail env (challenge : Constr.t) (solution : Constr.t) =
+  let sigma = Evd.from_env env in
+  let pp c = try Pp.string_of_ppcmds (Printer.pr_lconstr_env env sigma c) with _ -> "<unprintable>" in
+  let dbg c = try Pp.string_of_ppcmds (Constr.debug_print c) with _ -> "<unprintable>" in
+  let pc = pp challenge and ps = pp solution in
+  let base = Printf.sprintf "type differs from the challenge\n  challenge: %s\n  solution:  %s" pc ps in
+  if String.equal pc ps then
+    base ^ Printf.sprintf "\n  (identical when printed: the difference is in universes or kernel names)\n  challenge: %s\n  solution:  %s" (dbg challenge) (dbg solution)
+  else base
+
 let check_targets (spec : Spec.t) (env_s : Environ.env) :
   Verdict.target_report list * (Verdict.reason * string) option =
   let top = spec.Spec.top in
@@ -348,7 +361,7 @@ let check_targets (spec : Spec.t) (env_s : Environ.env) :
                  set Verdict.Statement_mismatch
                    (t.Spec.name ^ ": the solution's statement differs from the challenge's");
                  { (unchecked t.Spec.name) with status = "mismatch";
-                   target_detail = Some "type differs from the challenge" }
+                   target_detail = Some (type_diff_detail env_s t.Spec.typ cb.Declarations.const_type) }
                end
                else if not (eq_univs t.Spec.univs cb.Declarations.const_universes) then begin
                  set Verdict.Statement_mismatch (t.Spec.name ^ ": universe declaration differs");
