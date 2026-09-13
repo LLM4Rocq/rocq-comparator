@@ -121,7 +121,8 @@ and the attempt should be retried rather than scored as a failed proof.
   with `sandboxed: false` means no sandbox.
 - `targets`: per requested name, a `status` (`proved`, `not_proved`,
   `missing`, `mismatch`, or `unchecked`), the permitted axioms it used, and a
-  `detail`.
+  `detail`. On a `mismatch` the detail shows both statements, and their kernel
+  forms when the two print the same.
 - `checks`: fixed ordered stages `filter`, `challenge_compile`,
   `solution_compile`, `joined`, `statements`, `closure`, `axioms`, `hygiene`,
   `libraries`, `rocqchk`; each `"ok"`, `"skipped"`, or `{"fail": "<message>"}`.
