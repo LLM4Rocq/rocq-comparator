@@ -6,6 +6,10 @@ type loadpath_entry =
   | R of string * string  (** -R dir logical *)
   | I of string  (** -I dir (ML path) *)
 
+type axiom_policy =
+  | Listed    (** only the axioms in [permitted_axioms] (and challenge-declared ones) *)
+  | Imported  (** additionally, any axiom defined in a library the challenge Require'd *)
+
 type sandbox_mode =
   | Auto
   | No_sandbox
@@ -33,12 +37,14 @@ type t = {
   permitted_plugins : string list;  (** extra VernacExtend plugin names allowed *)
   permitted_libraries : string list;  (** if non-empty, dirpath prefixes the solution may Require *)
   permit_challenge_axioms : bool;
-      (** default true: every constant the challenge itself declares [Undef]
-          (a [Parameter]/[Axiom], or an [Admitted] helper lemma other than
-          the targets) is automatically added to the permitted-axiom set and
-          pinned to its challenge-side type, so a solution may either use it
-          as an assumption or supply a proof for it. The semantics live in
-          Check (this agent owns only the field, its JSON and its default). *)
+      (** default true: a constant the challenge itself declares [Undef] (a
+          [Parameter]/[Axiom], or an [Admitted] helper other than the targets)
+          is permitted and pinned to its challenge-side type, so a solution may
+          use it as an assumption or supply a proof. *)
+  axiom_policy : axiom_policy;
+      (** [Imported] (default): axioms from the challenge's imported libraries
+          are also allowed, so proofs over classical libraries need no per-axiom
+          list. [Listed]: only [permitted_axioms] (+ challenge-declared). *)
   config_dir : string;
 }
 
@@ -48,7 +54,7 @@ let default =
   { challenge = "Challenge.v"; solution = "Solution.v"; theorem_names = []; definition_names = [];
     permitted_axioms = []; loadpath = []; coqproject = None; top = None; timeout_s = default_timeout_s;
     sandbox = Auto; rocqchk = true; vm = true; impredicative_set = false; indices_matter = false;
-    noinit = false; permitted_plugins = []; permitted_libraries = []; permit_challenge_axioms = true;
+    noinit = false; permitted_plugins = []; permitted_libraries = []; permit_challenge_axioms = true; axiom_policy = Imported;
     config_dir = Sys.getcwd () }
 
 let absolute ~dir p = if Filename.is_relative p then Filename.concat dir p else p
@@ -212,6 +218,12 @@ let of_json ~config_dir (j : Yojson.Safe.t) : (t, string) result =
     | Some (`Int n) -> float_of_int n | Some (`Float f) -> f | _ -> default_timeout_s in
   let theorem_names = strings "theorem_names" j in
   let definition_names = strings "definition_names" j in
+  let* axiom_policy =
+    match str "axiom_policy" j with
+    | Some "listed" -> Result.Ok Listed
+    | Some "imported" | None -> Result.Ok Imported
+    | Some other -> Result.Error ("axiom_policy must be \"listed\" or \"imported\", got: " ^ other)
+  in
   if theorem_names = [] && definition_names = [] then
     Result.Error "theorem_names (or definition_names) must be non-empty"
   else
@@ -229,6 +241,7 @@ let of_json ~config_dir (j : Yojson.Safe.t) : (t, string) result =
         permitted_plugins = strings "permitted_plugins" j;
         permitted_libraries = strings "permitted_libraries" j;
         permit_challenge_axioms = bool_ ~default:true "permit_challenge_axioms" j;
+        axiom_policy;
         config_dir }
 
 let of_json_file (path : string) : (t, string) result =
@@ -258,4 +271,5 @@ let to_json (c : t) : Yojson.Safe.t =
       ("noinit", `Bool c.noinit);
       ("permitted_plugins", `List (List.map (fun s -> `String s) c.permitted_plugins));
       ("permitted_libraries", `List (List.map (fun s -> `String s) c.permitted_libraries));
-      ("permit_challenge_axioms", `Bool c.permit_challenge_axioms) ]
+      ("permit_challenge_axioms", `Bool c.permit_challenge_axioms);
+      ("axiom_policy", `String (match c.axiom_policy with Listed -> "listed" | Imported -> "imported")) ]

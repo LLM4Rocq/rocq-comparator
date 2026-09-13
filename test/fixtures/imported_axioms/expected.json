@@ -1,0 +1,2 @@
+{ "exit_code": 0,
+  "note": "Uses ClassicalDedekindReals + FunctionalExtensionality axioms via imported Stdlib.Reals, with NO permitted_axioms listed. Passes under the default axiom_policy=imported, which allows axioms defined in libraries the challenge imported. A solution-declared axiom would still be rejected (see custom_axiom)." }

@@ -238,6 +238,16 @@ let run_inner (h : hooks) (cfg : Config.t) ~(scratch : string) : Verdict.t =
                 @ List.map
                     (fun (c, _) -> KerName.to_string (Constant.canonical c))
                     spec.Spec.challenge_axioms
+                (* Imported policy: also permit any axiom defined in a library
+                   the challenge Require'd, as a "<library>.*" wildcard. So a
+                   challenge built on a classical library (mathcomp-analysis,
+                   Reals, ...) accepts that library's axioms with no per-axiom
+                   list, while an axiom the solution itself declares (in its own
+                   top, not an imported library) is still rejected. *)
+                @ (match cfg.Config.axiom_policy with
+                   | Config.Listed -> []
+                   | Config.Imported ->
+                     List.map (fun lib -> lib ^ ".*") spec.Spec.imported_libraries)
               in
               match h.assumptions ~permitted proved reports with
               | Result.Error (r, d, reports) ->

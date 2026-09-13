@@ -31,6 +31,14 @@ type t = {
   external_inds : ind_entry list;
   graph : UGraph.t;
   permitted_present : (Constant.t * Constr.t) list;
+  imported_libraries : string list;
+      (** Fully qualified names of the libraries the *challenge* [Require]d
+          (Library.loaded_libraries, minus [top]), e.g.
+          "mathcomp.classical.boolp", "Stdlib.Logic.Classical_Prop". The
+          [imported] axiom policy permits any axiom defined in one of these,
+          so a challenge that builds on a classical library (mathcomp-analysis,
+          Reals, ...) accepts that library's axioms without listing them. Read
+          from the running challenge environment, never a hand-kept list. *)
   challenge_axioms : (Constant.t * Constr.t) list;
       (** Constants the *challenge* declares without a body (Parameter, Axiom,
           a helper lemma left Admitted) and which are not themselves targets.
@@ -238,6 +246,12 @@ let extract ~(top : DirPath.t) ~(theorem_names : string list)
         (Verdict.Statement_mismatch,
          "the challenge statement depends on the section variable " ^ Id.to_string id)
     | local_consts, local_inds, external_consts, external_inds ->
+      let imported_libraries =
+        List.filter_map
+          (fun dp -> if DirPath.equal dp top then None else Some (DirPath.to_string dp))
+          (Library.loaded_libraries ())
+      in
       Result.Ok
         { top; targets; local_consts; local_inds; external_consts; external_inds;
-          graph = Global.universes (); permitted_present; challenge_axioms })
+          graph = Global.universes (); permitted_present; challenge_axioms;
+          imported_libraries })
