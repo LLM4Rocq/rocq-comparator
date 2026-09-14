@@ -520,7 +520,7 @@ and `filter.ml`'s classification. No exhaustive unit-test drowning.
 dune-project, rocq-comparator.opam, LICENSE (Apache-2.0), README.md, DESIGN.md
 bin/main.ml                 cmdliner CLI → rocq-comparator
 src/ (library rocq_comparator)
-  config.ml  project.ml  plan.ml  rocqdep_lexer.mll  driver.ml  filter.ml
+  config.ml  project.ml  plan.ml  require_scan.mll  driver.ml  filter.ml
   spec.ml  compare.ml  assumptions.ml  envcheck.ml  shadowing.ml  sandbox.ml
   rocqchk.ml  check.ml  verdict.ml
 examples/projects/{coqproject,dune}/   runnable project examples
@@ -661,10 +661,8 @@ initialised:
 
 1. discover the challenge's project, then the solution's (the same one when
    it covers the solution file);
-2. read every planned file's `Require` statements with coqdep's own lexer
-   (`Rocqdep_lexer`, vendored from Rocq: the `coqdeplib` library registers a
-   warning name that the Rocq library already owns, so the two cannot be
-   linked into one process) and resolve each with Rocq's rule: `From F
+2. read every planned file's `Require` statements (`Require_scan`, section
+   16.1) and resolve each with Rocq's rule: `From F
    Require D.B` names the file whose logical directory is `F.D` (exact), and
    under an implicit binding a suffix match is enough; a challenge-project
    file resolves only inside its project. A `Require` that names no planned
@@ -782,9 +780,42 @@ The two design reviews disagreed on three points; the more conservative
 choice was taken each time. Trusted `.vo` files live in their own directory
 with their own sandboxed writer (not one mirror per binding shared by both
 sides). Plan failures caused by the solver's files are exit 1 verdicts
-(never exit 2 retries). The full `coqdeplib` was dropped for its lexer plus
-the comparator's own resolution over the planned files, which also avoids
-coqdep's symlink-following directory walk.
+(never exit 2 retries). Dependency resolution is the comparator's own, over
+the planned files only, which also avoids coqdep's symlink-following
+directory walk.
+
+#### 16.1 Reading `Require` statements
+
+Neither of Rocq's two ready-made answers can be used, so `src/require_scan.mll`
+is the comparator's own scanner.
+
+`rocq-runtime.coqdeplib`, the library behind `rocq dep`, cannot be linked: its
+`Args` module registers the warning name `unknown-option` and
+`library/goptions.ml` registers it too, so the second initialiser raises
+`Already used warning name` and the binary dies at startup. This happens
+whether or not `-linkall` is used, because the library's wrapper module pulls
+`Args` in. Reported upstream.
+
+`rocq dep` as a subprocess is worse than it looks. On a `Require` that matches
+several files it picks one, prints a warning on stderr and exits 0, preferring
+the last binding on the command line, which is the solver's. The plan must
+reject that case, and recovering it from prose would be fail-open.
+
+The scanner reads only what the plan needs, the `From` and module names of
+each `Require`, following the reference manual's lexical rules: nested
+comments, strings with doubled quotes, and a sentence ending at a `.` before a
+blank. It is conservative: an unexpected token ends the module list. A missed
+`Require` cannot become a false accept, only a compile error, because a file
+the plan does not know is never compiled and so is never on the load path.
+It produces the same output as Rocq's own lexer on all 1868 `.v` files of the
+switch (Corelib, Stdlib, mathcomp, analysis, Coquelicot, Equations) plus the
+fixtures and examples: 6353 `Require` statements, no difference. Two
+differences show up only on files Rocq itself rejects or warns about, and the
+scanner follows the compiler rather than coqdep's lexer in both. A `"*)"`
+inside a comment does not end that comment, which is what `rocq compile` does
+(it warns and compiles; coqdep's lexer stops with an error). A `From` not
+followed by `Require` is a syntax error for the compiler, so the file never
+compiles; the scanner keeps reading, which can only add a file to the plan.
 
 ### Comparison with the Lean comparator
 

@@ -123,25 +123,15 @@ let binding_logicals (p : t) : string list =
 
 (* ---- the closure ---------------------------------------------------------- *)
 
-(* The Require statements of a file, read with coqdep's own lexer
-   (Rocqdep_lexer, the one unit of that library that can be linked into a
-   Rocq process): [(from, qualids)] per Require.  Load / Declare ML Module /
-   Extra Dependency are ignored here; the filter refuses them anyway. *)
+(* The Require statements of a file, [(from, qualids)] per Require (see
+   require_scan.mll, which also says why neither coqdeplib nor `rocq dep`
+   can do this).  Load and Declare ML Module are not read here; the filter
+   refuses them anyway. *)
 let requires (path : string) : ((string list option * string list list) list, string) result =
-  match open_in_bin path with
-  | exception Sys_error m -> Result.Error m
-  | ic ->
-    let lb = Lexing.from_channel ~with_positions:false ic in
-    let rec loop acc =
-      match Rocqdep_lexer.coq_action lb with
-      | Rocqdep_lexer.Require (from, l) -> loop ((from, l) :: acc)
-      | Rocqdep_lexer.Declare _ | Rocqdep_lexer.Load _ | Rocqdep_lexer.External _ -> loop acc
-      | exception Rocqdep_lexer.Fin_fichier -> Result.Ok (List.rev acc)
-      | exception Rocqdep_lexer.Syntax_error _ -> Result.Error ("cannot lex " ^ path)
-    in
-    let r = loop [] in
-    close_in ic;
-    r
+  match Require_scan.file path with
+  | Result.Error m -> Result.Error m
+  | Result.Ok l ->
+    Result.Ok (List.map (fun (r : Require_scan.t) -> (r.Require_scan.from, r.Require_scan.mods)) l)
 
 let rec is_suffix a b =
   (* [a] is a suffix of [b] *)

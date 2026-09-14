@@ -21,4 +21,4 @@
   rocq-runtime.vernac
   rocq-runtime.plugins.ltac))
 
-(ocamllex rocqdep_lexer)
+(ocamllex require_scan)

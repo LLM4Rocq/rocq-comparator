@@ -283,6 +283,56 @@ let t_permitted_matches () =
   Alcotest.(check bool) "empty permitted list permits nothing" false
     (RC.Assumptions.permitted_matches ~permitted:[] "anything")
 
+(* ---- Require_scan: the cases the plan depends on ------------------------ *)
+
+(* [scan src] as "from|mod mod" lines, the shape plan.ml consumes *)
+let scan (src : string) : string list =
+  let f = Filename.temp_file "scan" ".v" in
+  let oc = open_out_bin f in
+  output_string oc src;
+  close_out oc;
+  let r = RC.Require_scan.file f in
+  Sys.remove f;
+  match r with
+  | Result.Error m -> [ "ERROR " ^ m ]
+  | Result.Ok l ->
+    List.map
+      (fun (x : RC.Require_scan.t) ->
+         (match x.RC.Require_scan.from with None -> "-" | Some q -> String.concat "." q)
+         ^ "|"
+         ^ String.concat " " (List.map (String.concat ".") x.RC.Require_scan.mods))
+      l
+
+let check name expected src =
+  Alcotest.(check (list string)) name expected (scan src)
+
+let t_scan_basic () =
+  check "plain" [ "-|Foo" ] "Require Foo.\n";
+  check "import" [ "-|Foo" ] "Require Import Foo.\n";
+  check "export" [ "-|Foo" ] "Require Export Foo.\n";
+  check "several modules" [ "-|Foo Bar.Baz" ] "Require Import Foo Bar.Baz.\n";
+  check "from" [ "Lib|Foo" ] "From Lib Require Import Foo.\n";
+  check "qualified from" [ "A.B|C.D" ] "From A.B Require Export C.D.\n";
+  check "two statements" [ "-|A"; "Lib|B" ] "Require A.\nFrom Lib Require B.\n";
+  check "no trailing newline" [ "-|Foo" ] "Require Foo."
+
+let t_scan_skipped () =
+  check "in a comment" [] "(* Require Foo. *)\n";
+  check "in a nested comment" [] "(* a (* Require Foo. *) b *)\n";
+  check "in a string" [] "Definition s := \"Require Foo.\".\n";
+  check "a string inside a comment" [] "(* \"*)\" Require Foo. *)\n";
+  check "a doubled quote in a string" [] "Definition s := \"a\"\"Require Foo.\".\n";
+  check "an identifier that starts with Require" [] "Definition Requirement := 0.\n";
+  check "an identifier that ends with Require" [] "Definition myRequire := 0.\n";
+  check "From without Require" [] "From Lib Import Foo.\n"
+
+let t_scan_shapes () =
+  check "a comment between the parts" [ "Lib|Foo" ] "From Lib (* c *) Require (* c *) Import Foo.\n";
+  check "newlines between the parts" [ "Lib|Foo Bar" ] "From Lib\nRequire\n  Import\n  Foo\n  Bar.\n";
+  check "an import filter" [ "-|Foo" ] "Require Import Foo(bar, baz).\n";
+  check "the next sentence is not swallowed" [ "-|Foo" ] "Require Foo.\nDefinition x := 0.\n";
+  check "a Require after other code" [ "-|Foo" ] "Definition x := 0.\nRequire Foo.\n"
+
 let () =
   Alcotest.run "rocq-comparator/unit"
     [ ( "compare",
@@ -305,4 +355,8 @@ let () =
           Alcotest.test_case "attributes" `Quick t_attributes;
           Alcotest.test_case "plugins" `Quick t_plugins;
           Alcotest.test_case "allowed" `Quick t_allowed ] );
-      ("assumptions", [ Alcotest.test_case "permitted_matches" `Quick t_permitted_matches ]) ]
+      ("assumptions", [ Alcotest.test_case "permitted_matches" `Quick t_permitted_matches ]);
+      ( "require_scan",
+        [ Alcotest.test_case "basic forms" `Quick t_scan_basic;
+          Alcotest.test_case "comments and strings" `Quick t_scan_skipped;
+          Alcotest.test_case "spacing and filters" `Quick t_scan_shapes ] ) ]
