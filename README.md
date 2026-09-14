@@ -115,7 +115,10 @@ understood). A file that no binding covers is a plain single file, exactly as
 before. The challenge and the solution may share one project or have one
 each, and `batch` discovers each solution's project on its own. The
 `coqproject` field overrides the search, and `"coqproject": ""` disables it.
-`examples/projects/` has a runnable project in both layouts.
+`examples/projects/` has a runnable project in both layouts. This is also
+the layout to use for challenges with Hierarchy Builder instances: declare
+them in a helper file both sides `Require` rather than in the top file (see
+Limitations).
 
 The trust rule is the Lean comparator's assumption 1, applied literally:
 
@@ -244,9 +247,14 @@ wall-clock kill as a final backstop. There is no memory-size limit on macOS
 - **Sections**: `Admitted` in a `Section` discharges all section variables,
   `Qed` only the used ones, so types can genuinely differ. Prefer toplevel
   statements or an explicit `Proof using` in both files.
-- **HB / mathcomp names**: an extra Hierarchy-Builder declaration can renumber
-  later instance names and break a closure comparison over a challenge-local
-  HB instance.
+- **Anonymous HB instances in the top files**: Hierarchy Builder names an
+  anonymous `HB.instance` with a counter that lives in the elpi interpreter,
+  not in Rocq's state, so the solution's copy of a challenge-local instance
+  gets a different name and the closure comparison rejects it even for
+  identical text. This is an upstream issue (reported to the HB authors) and
+  the comparator does not paper over it. Put such instances in a helper file
+  that both sides `Require` (see Projects): compiled once, trusted, no
+  mismatch.
 - **`batch` recompiles the challenge per solution** (one sandboxed process
   each); it is more convenient than repeated `check`, not faster per solution.
 - `ROCQ_COMPARATOR_UNSAFE_NO_FILTER` is a test-only escape hatch: it runs the
