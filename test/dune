@@ -1,3 +1,5 @@
+(data_only_dirs fixtures)
+
 (executable
  (name run_fixtures)
  (modules run_fixtures)

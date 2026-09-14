@@ -1,0 +1,3 @@
+{ "exit_code": 0,
+  "manifest_trust": { "Sol.lib.Helper": "checked" },
+  "note": "The solution lives in its own dune project with (include_subdirs qualified): sol/lib/Helper.v is Sol.lib.Helper, compiled by the comparator under the strict filter from a scratch mirror (the comparator never runs dune). The challenge is a plain single file." }

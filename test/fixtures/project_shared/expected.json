@@ -1,0 +1,4 @@
+{ "exit_code": 0,
+  "checks": { "rocqchk": "ok" },
+  "manifest_trust": { "Proj.Defs": "trusted", "Proj.theories.Lib": "checked" },
+  "note": "A shared _CoqProject (-R . Proj): the challenge requires Defs.v, which becomes a trusted helper compiled in the trusted phase; the solution requires Defs.v and its own theories/Lib.v, which is compiled under the strict filter and replayed by rocqchk. The manifest labels each. The -arg -w line is accepted; file lists are ignored." }

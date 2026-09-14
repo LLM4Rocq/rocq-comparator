@@ -1,0 +1,2 @@
+{ "challenge": "Challenge.v", "solution": "Solution.v", "theorem_names": ["double_S"],
+  "timeout_s": 120, "rocqchk": true }

@@ -55,13 +55,19 @@ let inner_env_allowlist =
   [ "PATH"; "HOME"; "TMPDIR"; "LANG"; "LC_ALL"; "LC_CTYPE"; "TERM"; "USER";
     "ROCQ_COMPARATOR_UNSAFE_NO_FILTER" ]
 
-let inner_env () : string array =
+(* [tmpdir], when given, replaces TMPDIR: the inner process's temp dir is
+   then its own writable directory, so the sandbox never has to open the
+   system temp dir (under which the run's scratch itself lives) for writing. *)
+let inner_env ?tmpdir () : string array =
   Unix.environment ()
   |> Array.to_list
   |> List.filter (fun kv ->
       match String.index_opt kv '=' with
       | None -> false
-      | Some i -> List.mem (String.sub kv 0 i) inner_env_allowlist)
+      | Some i ->
+        let k = String.sub kv 0 i in
+        List.mem k inner_env_allowlist && not (k = "TMPDIR" && tmpdir <> None))
+  |> (fun l -> match tmpdir with Some d -> ("TMPDIR=" ^ d) :: l | None -> l)
   |> Array.of_list
 
 (* --- locating the wrapper binaries --- *)
@@ -118,8 +124,12 @@ let detect (mode : Config.sandbox_mode) : kind * string =
 let real_path p =
   match Unix.realpath p with exception _ -> p | r -> r
 
+(* [scratch] is the ONE directory the sandboxed process may write: a phase's
+   own side of the run's scratch (scratch/trusted for the trusted phase,
+   scratch/untrusted for the solution phase).  The other side, and the system
+   temp dir the scratch lives under, stay read-only; TMPDIR is pointed at the
+   writable directory (see [inner_env]). *)
 let sandbox_exec_profile ~scratch =
-  let tmp = real_path (Filename.get_temp_dir_name ()) in
   let scratch = real_path scratch in
   String.concat "\n"
     [ "(version 1)";
@@ -129,7 +139,6 @@ let sandbox_exec_profile ~scratch =
       "(allow mach-lookup)";
       "(allow file-read*)";
       Printf.sprintf "(allow file-write* (subpath %S))" scratch;
-      Printf.sprintf "(allow file-write* (subpath %S))" tmp;
       "(allow file-write* (literal \"/dev/null\"))";
       "(allow file-write* (literal \"/dev/tty\"))";
       "(allow file-write* (literal \"/dev/dtracehelper\"))";
@@ -141,7 +150,7 @@ let write_file path s =
   output_string oc s;
   close_out oc
 
-(* Full argv, wrapper included. *)
+(* Full argv, wrapper included.  [scratch] is the writable directory. *)
 let wrap (k : kind) ~scratch ~argv : string list =
   match k with
   | No_sandbox -> argv
@@ -152,11 +161,10 @@ let wrap (k : kind) ~scratch ~argv : string list =
     [ "sandbox-exec"; "-f"; profile ] @ argv
   | Landrun ->
     [ "landrun"; "--best-effort"; "--ro"; "/"; "--rw"; "/dev"; "--rwx"; scratch;
-      "--rw"; Filename.get_temp_dir_name (); "--ldd"; "--add-exec"; "--" ] @ argv
+      "--ldd"; "--add-exec"; "--" ] @ argv
   | Bwrap ->
     [ "bwrap"; "--ro-bind"; "/"; "/"; "--dev"; "/dev";
       "--bind"; scratch; scratch;
-      "--bind"; Filename.get_temp_dir_name (); Filename.get_temp_dir_name ();
       "--unshare-net"; "--die-with-parent"; "--" ] @ argv
 
 (* --- running a child --- *)

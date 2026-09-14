@@ -222,11 +222,11 @@ let t_attributes () =
   Alcotest.(check bool) "bypass_check is tolerated in Lenient" false (denied lenient bypass)
 
 let t_plugins () =
-  let ext plugin =
+  let ext ?(entry = "Whatever") ?(index = 0) plugin =
     vc
       (Vernacexpr.VernacSynterp
          (Vernacexpr.VernacExtend
-            ({ Vernacexpr.ext_plugin = plugin; ext_entry = "Whatever"; ext_index = 0 }, [])))
+            ({ Vernacexpr.ext_plugin = plugin; ext_entry = entry; ext_index = index }, [])))
   in
   Alcotest.(check bool) "ltac is allowed" false (denied strict (ext "rocq-runtime.plugins.ltac"));
   Alcotest.(check bool) "bare ltac2 is allowed" false (denied strict (ext "ltac2"));
@@ -241,7 +241,25 @@ let t_plugins () =
   Alcotest.(check bool) "permitted_plugins can force-allow even extraction" false
     (denied { strict with RC.Filter.permitted_plugins = [ "extraction" ] }
        (ext "rocq-runtime.plugins.extraction"));
-  Alcotest.(check bool) "the challenge may use any plugin" false (denied lenient (ext "coq-elpi.elpi"))
+  Alcotest.(check bool) "the challenge may use any plugin" false (denied lenient (ext "coq-elpi.elpi"));
+  (* elpi is a language runtime with system/open_out builtins: a solution may
+     RUN installed programs (HB.instance, an exported command, a query into
+     nothing is not one of them) but may not define, extend or query one *)
+  let elpi = "rocq-elpi.elpi" in
+  Alcotest.(check bool) "an exported elpi command (HB.instance) is allowed" false
+    (denied strict (ext ~entry:"ElpiHB.instance" elpi));
+  Alcotest.(check bool) "Elpi <program> args is allowed" false
+    (denied strict (ext ~entry:"ElpiRun" ~index:4 elpi));
+  Alcotest.(check bool) "Elpi Command / Program / Tactic / Db is denied" true
+    (denied strict (ext ~entry:"ElpiNamed" elpi));
+  Alcotest.(check bool) "Elpi Accumulate is denied" true
+    (denied strict (ext ~entry:"ElpiAccumulate" elpi));
+  Alcotest.(check bool) "Elpi Query is denied" true
+    (denied strict (ext ~entry:"ElpiRun" ~index:0 elpi));
+  Alcotest.(check bool) "permitted_plugins re-allows elpi programs" false
+    (denied { strict with RC.Filter.permitted_plugins = [ "elpi" ] } (ext ~entry:"ElpiNamed" elpi));
+  Alcotest.(check bool) "the challenge may define elpi programs" false
+    (denied lenient (ext ~entry:"ElpiNamed" elpi))
 
 let t_allowed () =
   let abort = vc (Vernacexpr.VernacSynPure Vernacexpr.VernacAbort) in

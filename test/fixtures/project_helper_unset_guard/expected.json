@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "forbidden_command", "checks": { "solution_compile": "fail" },
+  "note": "The strict vernacular filter applies to every file on the solution's side, not only the solution top: Unset Guard Checking in the helper is refused before it runs." }

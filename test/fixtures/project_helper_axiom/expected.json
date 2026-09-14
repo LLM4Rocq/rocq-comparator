@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "forbidden_axiom", "detail_contains": "Sol.lib.Helper.helper",
+  "note": "An Axiom declared in the solution's helper library is used by the proof. Helpers on the solution's side are never a source of permitted axioms (the imported policy covers only what the challenge loads), so the proof is rejected." }

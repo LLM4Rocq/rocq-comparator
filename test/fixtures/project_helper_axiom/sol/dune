@@ -1,0 +1,8 @@
+; the solver's own dune project
+(include_subdirs qualified)
+
+(coq.theory
+ (name Sol)
+ (package sol)
+ (synopsis "a solution with a helper library")
+ (flags :standard -w -notation-overridden))

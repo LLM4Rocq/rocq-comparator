@@ -78,6 +78,11 @@ type library_entry = {
   lib_name : string;  (** logical dirpath, e.g. "Stdlib.Arith.Arith" *)
   lib_path : string;  (** absolute .vo path, or "" if it could not be located *)
   lib_digest : string;  (** hex MD5 of the .vo, or "" if unavailable *)
+  lib_trust : string;
+      (** "installed" (from the switch), "trusted" (a project file in the
+          challenge's closure, compiled by this run) or "checked" (a project
+          file in the solution's closure, compiled by this run under the
+          strict filter and re-checked) *)
 }
 
 type manifest = {
@@ -141,7 +146,7 @@ let manifest_to_json (m : manifest) : Yojson.Safe.t =
             (fun (l : library_entry) ->
                `Assoc
                  [ ("name", `String l.lib_name); ("path", `String l.lib_path);
-                   ("digest", `String l.lib_digest) ])
+                   ("digest", `String l.lib_digest); ("trust", `String l.lib_trust) ])
             m.libraries)) ]
 
 let target_to_json (t : target_report) : Yojson.Safe.t =
@@ -189,7 +194,8 @@ let manifest_of_json (j : Yojson.Safe.t option) : manifest option =
                (fun e ->
                   { lib_name = str_or "" (member "name" e);
                     lib_path = str_or "" (member "path" e);
-                    lib_digest = str_or "" (member "digest" e) })
+                    lib_digest = str_or "" (member "digest" e);
+                    lib_trust = str_or "installed" (member "trust" e) })
                l
            | _ -> []) }
 

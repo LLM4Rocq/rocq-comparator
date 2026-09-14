@@ -30,6 +30,7 @@ type reason = Statement_mismatch | Dependency_mismatch | Not_proved | Target_not
             | Sandbox_error | Internal_error
 type check_status = Ok | Fail of string | Skipped
 type target_report = { name : string; status : string; assumptions : string list; target_detail : string option }
+type library_entry = { lib_name; lib_path; lib_digest; lib_trust : string (* installed | trusted | checked *) }
 type t = { ok : bool; reason : reason option; detail : string option; sandboxed : bool; sandbox : string;
            rocq_version : string; targets : target_report list; checks : (string * check_status) list;
            timing : (string * float) list; solution : string option }
@@ -54,13 +55,44 @@ type t = { challenge; solution; theorem_names; definition_names; permitted_axiom
 val of_json_file : string -> (t, string) result
 val of_json : config_dir:string -> Yojson.Safe.t -> (t, string) result
 val to_json : t -> Yojson.Safe.t
-val resolve_loadpath : t -> loadpath_entry list      (* absolute dirs, _CoqProject merged *)
+val resolve_loadpath : t -> loadpath_entry list      (* absolute dirs; the project file is NOT merged *)
 val loadpath_args : t -> string list                 (* -Q d l -R d l -I d ... *)
 val rocq_args : t -> string list                     (* loadpath_args @ -native-compiler no [...] *)
-val top_name : t -> string                           (* e.g. "Challenge" or "Comp.Problem" *)
+val top_name : t -> string                           (* from loadpath, e.g. "Challenge" or "Comp.Problem"; Project.top_name refines it *)
 val challenge_path / solution_path : t -> string     (* absolute *)
 val is_under : root:string -> string -> bool
 ```
+
+## Project and Plan (projects, DESIGN section 16)
+
+```ocaml
+(* Project: pure filesystem work, usable before Rocq is initialised *)
+type binding = { dir : string; logical : string; implicit : bool; files : (string * string) list }
+type t = { root : string; project_file : string; bindings : binding list; theories : string list }
+type flags = { impredicative_set : bool; indices_matter : bool; noinit : bool }
+val discover : flags:flags -> ?override:string -> string -> (t option, string) result
+    (* nearest _CoqProject (preferred) or dune-project above the file; None when no binding covers it;
+       override "" disables discovery *)
+val find_file : t -> string -> (binding * string) option     (* the file's binding and logical name *)
+val coqproject : flags:flags -> string -> (t, string) result  (* strict: -I, unknown -arg, native refused *)
+val dune_project : flags:flags -> string -> (t, string) result
+val top_name : Config.t -> string                            (* explicit top, else the project's name, else Config.top_name *)
+
+(* Plan: the closure and the scratch layout; Plan.make before Driver.init, check_installed after *)
+type entry = { path; logical : Names.DirPath.t; name : string; binding : int; rel : string list; from_challenge_project : bool }
+type t = { bindings; challenge_project; solution_project; trusted : entry list; untrusted : entry list }
+val make : ?with_solution:bool -> Config.t -> (t, Verdict.reason * string) result
+val trusted_dir / untrusted_dir : string -> string           (* scratch/trusted, scratch/untrusted *)
+val mkdirs : t -> scratch:string -> trusted:bool -> unit      (* every mirror dir, before init *)
+val mirror_args : ?trusted_only:bool -> t -> scratch:string -> string list   (* -Q/-R of the mirrors *)
+val mirror_dirs : t -> scratch:string -> string list
+val vo_dir / vo_path : scratch:string -> trusted:bool -> entry -> string
+val check_installed : t -> (unit, Verdict.reason * string) result   (* shadowing of switch namespaces, (theories) *)
+```
+
+`Rocqdep_lexer` is `tools/coqdep/lib/lexer.mll` of Rocq 9.2, vendored
+because `rocq-runtime.coqdeplib` cannot be linked into a process that links
+the Rocq library (a duplicate warning name at initialisation).
 
 ## Driver (CORE-A)
 
@@ -117,8 +149,10 @@ type t = { top : Names.DirPath.t; targets : target list;
            local_consts : const_entry list; local_inds : ind_entry list;
            external_consts : const_entry list; external_inds : ind_entry list;
            graph : UGraph.t; permitted_present : (Names.Constant.t * Constr.t) list }
-val extract : top:Names.DirPath.t -> theorem_names:string list -> definition_names:string list
-           -> permitted_axioms:string list -> (t, Verdict.reason * string) result
+val extract : ?trusted:Names.DirPath.t list -> top:Names.DirPath.t -> theorem_names:string list
+           -> definition_names:string list -> permitted_axioms:string list
+           -> permit_challenge_axioms:bool -> unit -> (t, Verdict.reason * string) result
+   (* [trusted]: the trusted helpers' names; their Undef constants are challenge axioms too *)
 val is_local : top:Names.DirPath.t -> Names.ModPath.t -> bool
 ```
 
@@ -169,8 +203,9 @@ val trusted_roots : Config.t -> string list   (* coqlib, coqlib/user-contrib, co
 
 ```ocaml
 val save_vo : top:Names.DirPath.t -> dir:string -> (string (* .vo path *), string) result
-val run : rocqchk:string -> top:Names.DirPath.t -> vo_dir:string -> loadpath_args:string list
-       -> deadline:float -> (unit, string) result       (* exit code + stderr tail on failure *)
+val run : rocqchk:string -> top:Names.DirPath.t -> norec:Names.DirPath.t list -> vo_dir:string
+       -> loadpath_args:string list -> deadline:float -> (unit, string) result
+       (* one -norec per untrusted helper and for top; exit code + stderr tail on failure *)
 val find_rocqchk : unit -> string option               (* next to Sys.executable_name's switch bin, or PATH *)
 ```
 
@@ -180,7 +215,9 @@ val find_rocqchk : unit -> string option               (* next to Sys.executable
 type kind = Sandbox_exec | Landrun | Bwrap | Custom of string list | No_sandbox
 val detect : Config.sandbox_mode -> kind * string          (* chosen kind and a one-line reason *)
 val name : kind -> string
-val wrap : kind -> scratch:string -> argv:string list -> string list   (* full argv incl. wrapper *)
+val wrap : kind -> scratch:string -> argv:string list -> string list
+    (* full argv incl. wrapper; [scratch] is the ONE writable directory (a phase's side of the scratch) *)
+val inner_env : ?tmpdir:string -> unit -> string array   (* allow-listed env; TMPDIR replaced by [tmpdir] *)
 type run_result = { exit_code : int; timed_out : bool; signaled : bool; stdout : string; stderr : string }
 val run : ?env:string array -> timeout_s:float -> string list -> run_result
   (* spawns argv in its own process group, kills the group on timeout, captures both streams *)
@@ -190,10 +227,11 @@ val is_inner : unit -> bool
 
 `wrap` for `Sandbox_exec` builds a profile: deny default; allow process*,
 sysctl-read, mach-lookup, file-read* everywhere; file-write* only under
-`scratch`, `/dev/null`, `/dev/tty`?, and the process's temp dir
-(`Filename.get_temp_dir_name ()`); deny network*. For `Landrun`:
-`landrun --best-effort --ro / --rw /dev --rwx <scratch> --ldd --add-exec -- argv`
-(check `landrun --help` spelling). For `Bwrap`:
+`scratch` (the writable side) and `/dev/null`, `/dev/tty`; deny network*.
+The system temp dir is not writable: the child's `TMPDIR` is the writable
+side. For `Landrun`:
+`landrun --best-effort --ro / --rw /dev --rwx <scratch> --ldd --add-exec -- argv`.
+For `Bwrap`:
 `bwrap --ro-bind / / --dev /dev --bind <scratch> <scratch> --unshare-net --die-with-parent -- argv`.
 `Custom l` → `l @ [scratch] @ ["--"] @ argv`.
 
@@ -211,14 +249,26 @@ type hooks = {
   envcheck : top:Names.DirPath.t -> trusted_roots:string list -> permitted_libraries:string list
              -> impredicative_set:bool -> indices_matter:bool -> (unit, Verdict.reason * string) result;
   trusted_roots : Config.t -> string list;
-  rocqchk : (top:Names.DirPath.t -> scratch:string -> loadpath_args:string list -> deadline:float
+  rocqchk : (top:Names.DirPath.t -> norec:Names.DirPath.t list -> vo_dir:string
+             -> loadpath_args:string list -> deadline:float
              -> (unit, string) result) option;     (* None = rocqchk unavailable → check "rocqchk" Skipped *)
+  filter_status : Verdict.check_status;
 }
 val permissive_hooks : hooks    (* filter allows all, assumptions/envcheck pass, no rocqchk — local testing only *)
 val run_inner : hooks -> Config.t -> scratch:string -> Verdict.t
-(* the whole inner pipeline (DESIGN §3 steps 1–5) with timing; never raises; sets rocq_version;
-   sandboxed/sandbox fields are filled by the caller *)
+(* the whole inner pipeline (DESIGN §3 steps 1–5, plus the project steps of section 16) with timing;
+   never raises; sets rocq_version; sandboxed/sandbox fields are filled by the caller.
+   [scratch] is the run's scratch ROOT: scratch/trusted holds what run_trusted wrote (read here),
+   scratch/untrusted is this phase's writable side. Without a project the layout is not touched. *)
+val run_trusted : hooks -> Config.t -> scratch:string -> Verdict.t
+(* the trusted phase: compiles the challenge's project closure into scratch/trusted and records
+   the .vo digests in scratch/trusted/libraries.json; ok = true means "go on" *)
+val validate_inner : hooks -> Config.t -> scratch:string -> Verdict.validation
 ```
+
+The browser front-end constructs the `hooks` record literally with
+`rocqchk = None` and calls `run_inner`, so hook FIELDS must not be added;
+changing the type inside the `rocqchk` option is safe.
 
 `bin/main.ml` (integration) builds the real `hooks` from `Filter`,
 `Assumptions`, `Envcheck`, `Rocqchk`.

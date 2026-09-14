@@ -6,6 +6,7 @@
      reason           (string, optional)
      detail_contains  (string, optional)
      checks           (object name -> "ok" | "skipped" | "fail", optional)
+     manifest_trust   (object library name -> "installed" | "trusted" | "checked", optional)
      batch            (list of solution files; runs `batch` instead of `check`)
      oks              (list of bools, one per batch solution)
      note             (free text, ignored) *)
@@ -83,6 +84,10 @@ let rocq_bin exe =
   in
   match guess with Some p -> p | None -> "rocq"
 
+(* A prebuild entry is either a file name (compiled in place with
+   -Q <copy> "" so the fake library gets its intended logical name) or
+   {"src", "top", "out"}: [src] compiled under the logical name [top] into
+   the .vo [out], which makes a stale .vo next to a different source. *)
 let prebuild ~exe ~dir files =
   let scratch = Filename.temp_file "rcfix_pb" "" in
   Sys.remove scratch;
@@ -90,10 +95,17 @@ let prebuild ~exe ~dir files =
   copy_tree dir scratch;
   let rocq = rocq_bin exe in
   List.iter
-    (fun f ->
-       let path = Filename.concat scratch f in
-       (* -Q <scratch> "" so the fake library gets its intended logical name *)
-       ignore (run [ rocq; "compile"; "-Q"; scratch; ""; path ]))
+    (function
+      | `String f ->
+        let path = Filename.concat scratch f in
+        ignore (run [ rocq; "compile"; "-Q"; scratch; ""; path ])
+      | j -> (
+        match str "src" j, str "top" j, str "out" j with
+        | Some src, Some top, Some out ->
+          ignore
+            (run [ rocq; "compile"; "-top"; top; "-o"; Filename.concat scratch out;
+                   Filename.concat scratch src ])
+        | _ -> ()))
     files;
   scratch
 
@@ -156,6 +168,24 @@ let check_one ~exe ~dir ~name ~expected ~env ~label =
             if not same then
               add (Printf.sprintf "check %s = %s, expected %s" k (Yojson.Safe.to_string g)
                      (Yojson.Safe.to_string want)))
+         wanted
+     | _ -> ());
+    (match member "manifest_trust" expected with
+     | Some (`Assoc wanted) ->
+       let libs =
+         match member "manifest" j with
+         | Some m -> ( match member "libraries" m with Some (`List l) -> l | _ -> [])
+         | None -> []
+       in
+       List.iter
+         (fun (name, want) ->
+            match List.find_opt (fun l -> str "name" l = Some name) libs with
+            | None -> add (Printf.sprintf "library %s missing from the manifest" name)
+            | Some l ->
+              let got = match str "trust" l with Some s -> s | None -> "" in
+              if `String got <> want then
+                add (Printf.sprintf "library %s: trust=%s, expected %s" name got
+                       (Yojson.Safe.to_string want)))
          wanted
      | _ -> ());
     (* optional per-target status assertions: [{"name":..,"status":..}, ..] *)
@@ -339,9 +369,7 @@ let () =
            (* a "prebuild" fixture is compiled and run in a scratch copy *)
            let dir =
              match member "prebuild" expected with
-             | Some (`List l) ->
-               prebuild ~exe ~dir
-                 (List.filter_map (function `String s -> Some s | _ -> None) l)
+             | Some (`List l) -> prebuild ~exe ~dir l
              | _ -> dir
            in
            let main =

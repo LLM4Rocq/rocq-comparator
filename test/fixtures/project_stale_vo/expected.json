@@ -1,0 +1,3 @@
+{ "exit_code": 1, "reason": "forbidden_axiom", "detail_contains": "Sol.lib.Helper.helper",
+  "prebuild": [ { "src": "stale/Helper.v", "top": "Sol.lib.Helper", "out": "sol/lib/Helper.vo" } ],
+  "note": "Before the run, the runner compiles an honest Helper.v (a proved lemma) into sol/lib/Helper.vo under the name Sol.lib.Helper, next to the sol/lib/Helper.v that actually ships (an Axiom). Had the stale .vo been loaded, the proof would have passed with no axiom. Only the comparator's own scratch mirror is ever on the load path, so the .v is compiled and its axiom is caught." }

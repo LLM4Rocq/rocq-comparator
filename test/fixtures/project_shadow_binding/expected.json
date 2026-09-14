@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "library_violation", "detail_contains": "shadows the challenge project's namespace Proj",
+  "note": "The challenge's project binds its directory to Proj; the solution's separate project binds its own directory to Proj.Extra, inside the trusted namespace. Even though no file name collides, the overlapping binding is refused before anything is compiled." }

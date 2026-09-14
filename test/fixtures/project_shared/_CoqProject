@@ -1,0 +1,4 @@
+-R . Proj
+-arg -w -arg -notation-overridden
+Defs.v
+Challenge.v

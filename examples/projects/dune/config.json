@@ -1,0 +1,2 @@
+{ "challenge": "Challenge.v", "solution": "Solution.v",
+  "theorem_names": ["step_pos", "step_not_bounded"] }

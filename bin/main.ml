@@ -106,15 +106,19 @@ let build_config ?(require_solution = true) (f : flags) : (C.Config.t, string) r
     Result.Error ("solution file not found: " ^ C.Config.solution_path c)
   else Result.Ok c
 
-(* The config handed to the inner process: every path absolute, the
-   _CoqProject already merged, the top name pinned. *)
+(* The config handed to the inner process: every path absolute (the project
+   override included, so the inner process discovers the same project), the
+   top name pinned. *)
 let resolved_config (c : C.Config.t) : C.Config.t =
   { c with
     C.Config.challenge = C.Config.challenge_path c;
     solution = C.Config.solution_path c;
     loadpath = C.Config.resolve_loadpath c;
-    coqproject = None;
-    top = Some (C.Config.top_name c) }
+    coqproject =
+      (match c.C.Config.coqproject with
+       | None | Some "" -> c.C.Config.coqproject
+       | Some p -> Some (C.Config.absolute ~dir:c.C.Config.config_dir p));
+    top = Some (C.Project.top_name c) }
 
 (* ------------------------------------------------------------------ *)
 (* scratch directories *)
@@ -126,7 +130,10 @@ let make_scratch () =
      it is also the library default -- because the sandbox relies on the
      scratch dir being private to this user, and that guarantee should be
      visible at the call site rather than an inherited default. *)
-  Filename.temp_dir ~perms:0o700 "rocq-comparator-" ""
+  let d = Filename.temp_dir ~perms:0o700 "rocq-comparator-" "" in
+  (* canonical, the way Rocq reports the paths of the .vo files it loads
+     (on macOS the temp dir sits behind a /var -> /private/var symlink) *)
+  match Unix.realpath d with p -> p | exception _ -> d
 
 let rec rm_rf path =
   match Unix.lstat path with
@@ -171,7 +178,7 @@ let real_hooks (cfg : C.Config.t) : C.Check.hooks =
          | None -> None
          | Some exe ->
            Some
-             (fun ~top ~scratch ~loadpath_args ~deadline ->
+             (fun ~top ~norec ~vo_dir ~loadpath_args ~deadline ->
                 (* The .vo was produced by a kernel running with these two
                    global typing flags; rocqchk defaults them both to off, so
                    without them it would re-check the library under different
@@ -185,10 +192,10 @@ let real_hooks (cfg : C.Config.t) : C.Check.hooks =
                   (if cfg.C.Config.impredicative_set then [ "-impredicative-set" ] else [])
                   @ (if cfg.C.Config.indices_matter then [ "-indices-matter" ] else [])
                 in
-                match C.Rocqchk.save_vo ~top ~dir:scratch with
+                match C.Rocqchk.save_vo ~top ~dir:vo_dir with
                 | Result.Error e -> Result.Error e
                 | Result.Ok _ ->
-                  C.Rocqchk.run ~rocqchk:exe ~top ~vo_dir:scratch
+                  C.Rocqchk.run ~rocqchk:exe ~top ~norec ~vo_dir
                     ~loadpath_args:(loadpath_args @ flags) ~deadline));
     filter_status =
       (if no_filter then C.Verdict.Fail "DISABLED by ROCQ_COMPARATOR_UNSAFE_NO_FILTER"
@@ -205,7 +212,7 @@ let real_hooks (cfg : C.Config.t) : C.Check.hooks =
    the verdict.  The file is written by us, once, *after* the whole pipeline
    has run, so anything the solution may have put there earlier is overwritten,
    and the outer process prefers it over stdout. *)
-let verdict_file scratch = Filename.concat scratch "verdict.json"
+let verdict_file dir = Filename.concat dir "verdict.json"
 
 let write_verdict_file scratch (v : C.Verdict.t) =
   try
@@ -265,39 +272,47 @@ let read_validation_file scratch : C.Verdict.validation option =
      | j -> ( match C.Verdict.validation_of_json j with Result.Ok v -> Some v | Result.Error _ -> None)
      | exception _ -> None)
 
-let run_inner ~pretty (config_path : string) =
+(* The scratch layout (DESIGN.md section 16):
+     <scratch>/config.json     the resolved config, read by every phase
+     <scratch>/trusted/        written by the trusted phase only
+     <scratch>/untrusted/      written by the solution phase only
+   Each phase chdirs into its own side (tactic caches such as .lia.cache go
+   to the cwd) and writes its verdict there; that side is the only place the
+   sandbox lets it write. *)
+let run_phase ~pretty ~trusted (config_path : string) =
+  let scratch = absolute (Filename.dirname config_path) in
+  let side = if trusted then C.Plan.trusted_dir scratch else C.Plan.untrusted_dir scratch in
   match C.Config.of_json_file config_path with
   | Result.Error m ->
     let v = C.Verdict.fail C.Verdict.Config_error m in
-    write_verdict_file (absolute (Filename.dirname config_path)) v;
+    write_verdict_file side v;
     C.Verdict.print ~pretty v;
     C.Verdict.exit_code v
   | Result.Ok cfg ->
-    (* absolute, because we are about to chdir into it: every later use of
-       [scratch] (the verdict file, the saved .vo) must keep pointing at the
-       same directory *)
-    let scratch = absolute (Filename.dirname config_path) in
-    (* tactic caches (.lia.cache, .nra.cache) are written to the cwd: keep
-       them in the scratch directory, which is also the only writable place
-       inside the sandbox *)
-    (try Sys.chdir scratch with Sys_error _ -> ());
-    let v = C.Check.run_inner (real_hooks cfg) cfg ~scratch in
-    write_verdict_file scratch v;
+    (* absolute, because we are about to chdir: every later use of [scratch]
+       (the verdict file, the saved .vo) must keep pointing at the same place *)
+    (try Sys.chdir side with Sys_error _ -> ());
+    let v =
+      if trusted then C.Check.run_trusted (real_hooks cfg) cfg ~scratch
+      else C.Check.run_inner (real_hooks cfg) cfg ~scratch
+    in
+    write_verdict_file side v;
     C.Verdict.print ~pretty v;
     C.Verdict.exit_code v
 
 let run_validate_inner ~pretty (config_path : string) =
+  let scratch = absolute (Filename.dirname config_path) in
+  let side = C.Plan.untrusted_dir scratch in
   match C.Config.of_json_file config_path with
   | Result.Error m ->
     let v = fail_validation m in
-    write_validation_file (absolute (Filename.dirname config_path)) v;
+    write_validation_file side v;
     C.Verdict.print_validation ~pretty v;
     C.Verdict.validation_exit_code v
   | Result.Ok cfg ->
-    let scratch = absolute (Filename.dirname config_path) in
-    (try Sys.chdir scratch with Sys_error _ -> ());
-    let v = C.Check.validate_inner (real_hooks cfg) cfg in
-    write_validation_file scratch v;
+    (try Sys.chdir side with Sys_error _ -> ());
+    let v = C.Check.validate_inner (real_hooks cfg) cfg ~scratch in
+    write_validation_file side v;
     C.Verdict.print_validation ~pretty v;
     C.Verdict.validation_exit_code v
 
@@ -330,7 +345,37 @@ let parse_verdict (out : string) : C.Verdict.t option =
 
 let self_exe () = absolute Sys.executable_name
 
-(* Run one solution through the sandboxed inner process. Never raises. *)
+(* The trusted phase runs when the challenge has a project: a separate
+   sandboxed process that may write only scratch/trusted compiles the
+   challenge's helper closure there, so that the solution phase, which may
+   write only scratch/untrusted, can load those .vo files but never alter
+   them.  Discovery here reads the challenge's project file, trusted input. *)
+let challenge_has_project (cfg : C.Config.t) : (bool, string) result =
+  match
+    C.Project.discover ~flags:(C.Plan.flags_of cfg) ?override:(C.Plan.override cfg)
+      (C.Config.challenge_path cfg)
+  with
+  | Result.Ok p -> Result.Ok (p <> None)
+  | Result.Error m -> Result.Error ("the challenge's project: " ^ m)
+
+let prepare_scratch (cfg : C.Config.t) scratch =
+  Unix.mkdir (C.Plan.trusted_dir scratch) 0o700;
+  Unix.mkdir (C.Plan.untrusted_dir scratch) 0o700;
+  let config_path = Filename.concat scratch "config.json" in
+  let oc = open_out_bin config_path in
+  Yojson.Safe.to_channel oc (C.Config.to_json (resolved_config cfg));
+  output_char oc '\n';
+  close_out oc;
+  config_path
+
+let run_sandboxed kind ~(cfg : C.Config.t) ~writable ~argv =
+  let argv = C.Sandbox.wrap kind ~scratch:writable ~argv in
+  (* the inner process gets an allow-listed environment only: see
+     Sandbox.inner_env for why; its temp dir is its writable side *)
+  C.Sandbox.run ~env:(C.Sandbox.inner_env ~tmpdir:writable ())
+    ~timeout_s:(cfg.C.Config.timeout_s +. 30.) argv
+
+(* Run one solution through the sandboxed inner process(es). Never raises. *)
 let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict.t =
   let kind, reason = C.Sandbox.detect cfg.C.Config.sandbox in
   if kind = C.Sandbox.No_sandbox && cfg.C.Config.sandbox = C.Config.Auto && not quiet then
@@ -340,26 +385,9 @@ let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict
     if not keep_scratch then rm_rf scratch;
     { v with C.Verdict.sandboxed = kind <> C.Sandbox.No_sandbox; sandbox = C.Sandbox.name kind }
   in
-  match
-    let cfg = resolved_config cfg in
-    let config_path = Filename.concat scratch "config.json" in
-    let oc = open_out_bin config_path in
-    Yojson.Safe.to_channel oc (C.Config.to_json cfg);
-    output_char oc '\n';
-    close_out oc;
-    let argv =
-      C.Sandbox.wrap kind ~scratch
-        ~argv:[ self_exe (); "check"; "--inner"; config_path ]
-    in
-    (* the inner process gets an allow-listed environment only: see
-       Sandbox.inner_env for why *)
-    C.Sandbox.run ~env:(C.Sandbox.inner_env ()) ~timeout_s:(cfg.C.Config.timeout_s +. 30.) argv
-  with
-  | exception e ->
-    finally (C.Verdict.fail C.Verdict.Sandbox_error ("cannot start the sandbox: " ^ Printexc.to_string e))
-  | r -> (
-    (* the verdict written by the inner process wins over anything on stdout *)
-    let from_file = read_verdict_file scratch in
+  (* the verdict written by the inner process wins over anything on stdout *)
+  let verdict_of side (r : C.Sandbox.run_result) : C.Verdict.t =
+    let from_file = read_verdict_file side in
     let v =
       match from_file with
       | Some _ -> from_file
@@ -369,7 +397,7 @@ let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict
         Stdlib.Option.map
           (fun (v : C.Verdict.t) ->
              let note =
-               "the inner process did not write " ^ verdict_file scratch
+               "the inner process did not write " ^ verdict_file side
                ^ "; this verdict was recovered from its stdout"
              in
              { v with
@@ -378,23 +406,46 @@ let run_outer_once ?(quiet = false) (cfg : C.Config.t) ~keep_scratch : C.Verdict
           (parse_verdict r.C.Sandbox.stdout)
     in
     match v with
-    | Some v when not r.C.Sandbox.timed_out -> finally v
+    | Some v when not r.C.Sandbox.timed_out -> v
     | _ ->
       if r.C.Sandbox.timed_out then
-        finally
-          (C.Verdict.fail C.Verdict.Timeout
-             (Printf.sprintf "no verdict after %.0fs (the sandboxed process was killed)"
-                (cfg.C.Config.timeout_s +. 30.)))
+        C.Verdict.fail C.Verdict.Timeout
+          (Printf.sprintf "no verdict after %.0fs (the sandboxed process was killed)"
+             (cfg.C.Config.timeout_s +. 30.))
       else if r.C.Sandbox.signaled then
-        finally
-          (C.Verdict.fail C.Verdict.Internal_error
-             (Printf.sprintf "the sandboxed process died on signal %d: %s"
-                (r.C.Sandbox.exit_code - 128) (tail 500 r.C.Sandbox.stderr)))
+        C.Verdict.fail C.Verdict.Internal_error
+          (Printf.sprintf "the sandboxed process died on signal %d: %s"
+             (r.C.Sandbox.exit_code - 128) (tail 500 r.C.Sandbox.stderr))
       else
-        finally
-          (C.Verdict.fail C.Verdict.Sandbox_error
-             (Printf.sprintf "the sandboxed process exited with %d without printing a verdict: %s"
-                r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout)))))
+        C.Verdict.fail C.Verdict.Sandbox_error
+          (Printf.sprintf "the sandboxed process exited with %d without printing a verdict: %s"
+             r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout)))
+  in
+  match
+    let config_path = prepare_scratch cfg scratch in
+    let trusted =
+      match challenge_has_project cfg with
+      | Result.Error m -> Some (C.Verdict.fail C.Verdict.Config_error m)
+      | Result.Ok false -> None
+      | Result.Ok true ->
+        let side = C.Plan.trusted_dir scratch in
+        let r =
+          run_sandboxed kind ~cfg ~writable:side
+            ~argv:[ self_exe (); "check"; "--inner-trusted"; config_path ]
+        in
+        let v = verdict_of side r in
+        if v.C.Verdict.ok then None else Some v
+    in
+    match trusted with
+    | Some v -> v
+    | None ->
+      let side = C.Plan.untrusted_dir scratch in
+      let r = run_sandboxed kind ~cfg ~writable:side ~argv:[ self_exe (); "check"; "--inner"; config_path ] in
+      verdict_of side r
+  with
+  | exception e ->
+    finally (C.Verdict.fail C.Verdict.Sandbox_error ("cannot start the sandbox: " ^ Printexc.to_string e))
+  | v -> finally v
 
 (* Run the challenge alone through the sandboxed validate inner process.
    Mirrors run_outer_once, but there is no per-solution machinery and the
@@ -405,35 +456,54 @@ let run_validate_outer (cfg : C.Config.t) ~keep_scratch : C.Verdict.validation =
     prerr_endline ("rocq-comparator: warning: " ^ reason);
   let scratch = make_scratch () in
   let cleanup () = if not keep_scratch then rm_rf scratch in
+  let killed r =
+    if r.C.Sandbox.timed_out then
+      Some (fail_validation
+              (Printf.sprintf "no validation report after %.0fs (the sandboxed process was killed)"
+                 (cfg.C.Config.timeout_s +. 30.)))
+    else None
+  in
   match
-    let cfg = resolved_config cfg in
-    let config_path = Filename.concat scratch "config.json" in
-    let oc = open_out_bin config_path in
-    Yojson.Safe.to_channel oc (C.Config.to_json cfg);
-    output_char oc '\n';
-    close_out oc;
-    let argv =
-      C.Sandbox.wrap kind ~scratch ~argv:[ self_exe (); "validate"; "--inner"; config_path ]
+    let config_path = prepare_scratch cfg scratch in
+    let trusted =
+      match challenge_has_project cfg with
+      | Result.Error m -> Some (fail_validation m)
+      | Result.Ok false -> None
+      | Result.Ok true ->
+        let side = C.Plan.trusted_dir scratch in
+        let r =
+          run_sandboxed kind ~cfg ~writable:side
+            ~argv:[ self_exe (); "check"; "--inner-trusted"; config_path ]
+        in
+        (match killed r, read_verdict_file side with
+         | Some v, _ -> Some v
+         | None, Some v when v.C.Verdict.ok -> None
+         | None, Some v ->
+           Some (fail_validation (match v.C.Verdict.detail with Some d -> d | None -> "the trusted phase failed"))
+         | None, None ->
+           Some (fail_validation
+                   (Printf.sprintf "the trusted phase exited with %d without a verdict: %s"
+                      r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout)))))
     in
-    C.Sandbox.run ~env:(C.Sandbox.inner_env ()) ~timeout_s:(cfg.C.Config.timeout_s +. 30.) argv
+    match trusted with
+    | Some v -> v
+    | None ->
+      let side = C.Plan.untrusted_dir scratch in
+      let r =
+        run_sandboxed kind ~cfg ~writable:side ~argv:[ self_exe (); "validate"; "--inner"; config_path ]
+      in
+      (match killed r, read_validation_file side with
+       | Some v, _ -> v
+       | None, Some v -> v
+       | None, None ->
+         fail_validation
+           (Printf.sprintf "the sandboxed process exited with %d without a validation report: %s"
+              r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout))))
   with
   | exception e ->
     cleanup ();
     fail_validation ("cannot start the sandbox: " ^ Printexc.to_string e)
-  | r ->
-    let v = read_validation_file scratch in
-    cleanup ();
-    (match v with
-     | Some v when not r.C.Sandbox.timed_out -> v
-     | _ ->
-       if r.C.Sandbox.timed_out then
-         fail_validation
-           (Printf.sprintf "no validation report after %.0fs (the sandboxed process was killed)"
-              (cfg.C.Config.timeout_s +. 30.))
-       else
-         fail_validation
-           (Printf.sprintf "the sandboxed process exited with %d without a validation report: %s"
-              r.C.Sandbox.exit_code (tail 500 (r.C.Sandbox.stderr ^ " " ^ r.C.Sandbox.stdout))))
+  | v -> cleanup (); v
 
 (* ------------------------------------------------------------------ *)
 (* subcommands *)
@@ -444,10 +514,10 @@ let run_validate_outer (cfg : C.Config.t) ~keep_scratch : C.Verdict.validation =
    run the pipeline in-process, unsandboxed, which is exactly the situation the
    sandbox exists to prevent.  The flag is passed by the outer process itself,
    so it cannot be set by accident. *)
-let cmd_check (f : flags) ~inner ~pretty ~keep_scratch =
-  if inner then
+let cmd_check (f : flags) ~inner ~inner_trusted ~pretty ~keep_scratch =
+  if inner || inner_trusted then
     match f.f_config with
-    | Some path -> run_inner ~pretty path
+    | Some path -> run_phase ~pretty ~trusted:inner_trusted path
     | None ->
       prerr_endline "rocq-comparator: --inner needs a config file";
       2
@@ -593,7 +663,7 @@ let axiom_arg =
            Repeatable.")
 
 let coqproject_arg =
-  Arg.(value & opt (some string) None & info [ "coqproject" ] ~docv:"FILE" ~doc:"A _CoqProject to take the load path from.")
+  Arg.(value & opt (some string) None & info [ "coqproject" ] ~docv:"FILE" ~doc:"The project file (_CoqProject or dune-project) of both files, instead of discovering it; an empty string disables discovery.")
 
 let top_arg =
   Arg.(value & opt (some string) None & info [ "top" ] ~docv:"NAME" ~doc:"Logical name of the library (default: derived from the load path).")
@@ -611,6 +681,8 @@ let no_rocqchk_arg = Arg.(value & flag & info [ "no-rocqchk" ] ~doc:"Skip the ro
 let pretty_arg = Arg.(value & flag & info [ "pretty" ] ~doc:"Pretty-print the JSON verdict.")
 let json_arg = Arg.(value & flag & info [ "json" ] ~doc:"Print the verdict as one JSON line (the default).")
 let inner_arg = Arg.(value & flag & info [ "inner" ] ~doc:"Internal: run the checking pipeline in this process.")
+let inner_trusted_arg =
+  Arg.(value & flag & info [ "inner-trusted" ] ~doc:"Internal: compile the challenge's project closure in this process.")
 let keep_scratch_arg = Arg.(value & flag & info [ "keep-scratch" ] ~doc:"Do not delete the scratch directory.")
 
 let flags_term =
@@ -632,9 +704,11 @@ let check_cmd =
       `P "Exit code: 0 accepted, 1 rejected, 2 infrastructure error.";
       `Blocks man_loadpath ]
   in
-  let run f inner pretty _json keep_scratch = cmd_check f ~inner ~pretty ~keep_scratch in
+  let run f inner inner_trusted pretty _json keep_scratch =
+    cmd_check f ~inner ~inner_trusted ~pretty ~keep_scratch
+  in
   Cmd.v (Cmd.info "check" ~doc ~man)
-    Term.(const run $ flags_term $ inner_arg $ pretty_arg $ json_arg $ keep_scratch_arg)
+    Term.(const run $ flags_term $ inner_arg $ inner_trusted_arg $ pretty_arg $ json_arg $ keep_scratch_arg)
 
 let validate_cmd =
   let doc = "Sanity-check a challenge before publishing it (no solution needed)." in

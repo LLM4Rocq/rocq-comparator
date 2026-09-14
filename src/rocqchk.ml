@@ -61,12 +61,16 @@ let tail n s =
   let len = String.length s in
   if len <= n then s else "..." ^ String.sub s (len - n) n
 
-let run ~(rocqchk : string) ~(top : DirPath.t) ~(vo_dir : string)
+(* [norec]: the libraries to replay besides [top] (the untrusted helpers the
+   comparator compiled in this run); everything they depend on is admitted
+   from the .vo files on the load path, which are the switch's and the
+   comparator's own. *)
+let run ~(rocqchk : string) ~(top : DirPath.t) ~(norec : DirPath.t list) ~(vo_dir : string)
     ~(loadpath_args : string list) ~(deadline : float) : (unit, string) result =
   let prefix, _ = split_top top in
   let argv =
     [ rocqchk; "-silent"; "-Q"; vo_dir; prefix ] @ loadpath_args
-    @ [ "-norec"; DirPath.to_string top ]
+    @ List.concat_map (fun dp -> [ "-norec"; DirPath.to_string dp ]) (norec @ [ top ])
   in
   let timeout = deadline -. Unix.gettimeofday () in
   if timeout <= 0. then Result.Error "no time budget left for rocqchk"

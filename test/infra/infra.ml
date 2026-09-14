@@ -86,19 +86,41 @@ let t_top_name () =
   let c = { c with RC.Config.top = Some "Explicit.Name" } in
   Alcotest.(check string) "an explicit top wins" "Explicit.Name" (RC.Config.top_name c)
 
+let flags = { RC.Project.impredicative_set = false; indices_matter = false; noinit = false }
+
 let t_coqproject () =
   let dir = tmpdir () in
+  Unix.mkdir (Filename.concat dir "theories") 0o700;
+  Unix.mkdir (Filename.concat dir "other") 0o700;
+  write (Filename.concat dir "theories/A.v") "";
+  write (Filename.concat dir "other/B.v") "";
   write (Filename.concat dir "_CoqProject")
-    "# a comment\n-Q theories Comp\n-R other Other\n-I ml\nfoo.v\n";
+    "# a comment\n-Q theories Comp\n-R other Other\n-arg -w -arg -notation-overridden\nfoo.v\n";
+  (match RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject") with
+   | Result.Error m -> Alcotest.fail ("project rejected: " ^ m)
+   | Result.Ok p ->
+     Alcotest.(check (list string)) "bindings and their files"
+       [ "Q " ^ Filename.concat dir "theories" ^ " Comp: Comp.A";
+         "R " ^ Filename.concat dir "other" ^ " Other: Other.B" ]
+       (List.map
+          (fun b ->
+             (if b.RC.Project.implicit then "R " else "Q ") ^ b.RC.Project.dir ^ " "
+             ^ b.RC.Project.logical ^ ": "
+             ^ String.concat "," (List.map snd b.RC.Project.files))
+          p.RC.Project.bindings));
+  (* the project's load path is no longer merged into the configured one:
+     source directories are never bound directly *)
   let c =
     { RC.Config.default with
       RC.Config.config_dir = dir; coqproject = Some "_CoqProject"; theorem_names = [ "foo" ] }
   in
-  Alcotest.(check (list string)) "the _CoqProject load path is merged"
-    [ "-Q"; Filename.concat dir "theories"; "Comp";
-      "-R"; Filename.concat dir "other"; "Other";
-      "-I"; Filename.concat dir "ml" ]
-    (RC.Config.loadpath_args c)
+  Alcotest.(check (list string)) "no source directory on the load path" [] (RC.Config.loadpath_args c);
+  write (Filename.concat dir "_CoqProject") "-Q theories Comp\n-I ml\n";
+  Alcotest.(check bool) "-I is refused" true
+    (Result.is_error (RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject")));
+  write (Filename.concat dir "_CoqProject") "-Q theories Comp\n-arg -type-in-type\n";
+  Alcotest.(check bool) "an unknown -arg is refused" true
+    (Result.is_error (RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject")))
 
 (* Regression for the old hand-rolled tokenizer, which stripped quotes only
    AFTER splitting on whitespace, so a quoted directory containing a space was
@@ -106,16 +128,63 @@ let t_coqproject () =
    Rocq's own parser (CoqProject_file.read_project_file) gets both right. *)
 let t_coqproject_quoting () =
   let dir = tmpdir () in
+  Unix.mkdir (Filename.concat dir "my dir") 0o700;
   write (Filename.concat dir "_CoqProject")
-    "-Q \"my dir\" MyLib  # an inline comment, ignored\n-I \"ml dir\"\n";
-  let c =
-    { RC.Config.default with
-      RC.Config.config_dir = dir; coqproject = Some "_CoqProject"; theorem_names = [ "foo" ] }
-  in
-  Alcotest.(check (list string)) "a quoted directory with a space is one argument"
-    [ "-Q"; Filename.concat dir "my dir"; "MyLib";
-      "-I"; Filename.concat dir "ml dir" ]
-    (RC.Config.loadpath_args c)
+    "-Q \"my dir\" MyLib  # an inline comment, ignored\n";
+  match RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject") with
+  | Result.Error m -> Alcotest.fail ("project rejected: " ^ m)
+  | Result.Ok p ->
+    Alcotest.(check (list string)) "a quoted directory with a space is one argument"
+      [ Filename.concat dir "my dir" ]
+      (List.map (fun b -> b.RC.Project.dir) p.RC.Project.bindings)
+
+(* Discovery: the nearest project file wins, a file outside every binding
+   has no project, and the dune reader understands (include_subdirs
+   qualified) and refuses what would change the build. *)
+let t_discover () =
+  let dir = tmpdir () in
+  let mk d = Unix.mkdir (Filename.concat dir d) 0o700 in
+  mk "proj"; mk "proj/theories"; mk "proj/theories/sub"; mk "proj/other"; mk "elsewhere";
+  write (Filename.concat dir "proj/dune-project") "(lang dune 3.8)\n(using coq 0.8)\n";
+  write (Filename.concat dir "proj/theories/dune")
+    "(include_subdirs qualified)\n(coq.theory (name Comp) (theories mathcomp.ssreflect)\n (flags :standard -w -foo))\n";
+  write (Filename.concat dir "proj/theories/A.v") "";
+  write (Filename.concat dir "proj/theories/sub/B.v") "";
+  write (Filename.concat dir "proj/other/C.v") "";
+  write (Filename.concat dir "elsewhere/D.v") "";
+  let file = Filename.concat dir "proj/theories/sub/B.v" in
+  (match RC.Project.discover ~flags file with
+   | Result.Error m -> Alcotest.fail m
+   | Result.Ok None -> Alcotest.fail "no project found"
+   | Result.Ok (Some p) ->
+     Alcotest.(check string) "the dune project root" (Filename.concat dir "proj") p.RC.Project.root;
+     Alcotest.(check (list string)) "qualified names" [ "Comp.A"; "Comp.sub.B" ]
+       (List.concat_map (fun b -> List.map snd b.RC.Project.files) p.RC.Project.bindings);
+     Alcotest.(check (list string)) "theories to resolve" [ "mathcomp.ssreflect" ] p.RC.Project.theories;
+     Alcotest.(check bool) "the file is found" true (RC.Project.find_file p file <> None));
+  Alcotest.(check bool) "a file under the root but in no theory has no project" true
+    (RC.Project.discover ~flags (Filename.concat dir "proj/other/C.v") = Result.Ok None);
+  Alcotest.(check bool) "a file with no project file above has no project" true
+    (RC.Project.discover ~flags (Filename.concat dir "elsewhere/D.v") = Result.Ok None);
+  Alcotest.(check bool) "an empty override disables discovery" true
+    (RC.Project.discover ~flags ~override:"" file = Result.Ok None);
+  write (Filename.concat dir "proj/theories/dune")
+    "(coq.theory (name Comp) (flags -type-in-type))\n";
+  Alcotest.(check bool) "a kernel flag the config does not set is refused" true
+    (Result.is_error (RC.Project.discover ~flags file));
+  write (Filename.concat dir "proj/theories/dune") "(coq.theory (name Comp) (modules :standard \\ A))\n";
+  Alcotest.(check bool) "set-language modules are refused" true
+    (Result.is_error (RC.Project.discover ~flags file));
+  (* a _CoqProject next to the dune-project wins *)
+  write (Filename.concat dir "proj/_CoqProject") "-R theories Other\n";
+  (match RC.Project.discover ~flags file with
+   | Result.Ok (Some p) ->
+     Alcotest.(check string) "_CoqProject preferred" (Filename.concat dir "proj/_CoqProject") p.RC.Project.project_file
+   | _ -> Alcotest.fail "expected the _CoqProject");
+  (* a symbolic link inside a binding directory is refused *)
+  Unix.symlink (Filename.concat dir "elsewhere") (Filename.concat dir "proj/theories/link");
+  Alcotest.(check bool) "a symlink inside a binding is refused" true
+    (Result.is_error (RC.Project.discover ~flags file))
 
 (* --- Verdict --- *)
 
@@ -264,7 +333,8 @@ let () =
           Alcotest.test_case "no targets" `Quick t_no_targets;
           Alcotest.test_case "top name" `Quick t_top_name;
           Alcotest.test_case "_CoqProject" `Quick t_coqproject;
-          Alcotest.test_case "_CoqProject quoting" `Quick t_coqproject_quoting ] );
+          Alcotest.test_case "_CoqProject quoting" `Quick t_coqproject_quoting;
+          Alcotest.test_case "project discovery" `Quick t_discover ] );
       ( "verdict",
         [ Alcotest.test_case "json round trip" `Quick t_verdict_roundtrip;
           Alcotest.test_case "exit codes" `Quick t_exit_codes;

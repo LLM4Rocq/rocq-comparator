@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "library_violation", "detail_contains": "From Proj Require Defs matches several project files",
+  "note": "The solution's project ships its own Defs.v under the same logical name Proj.Defs as the trusted helper (with a different definition of double). The plan sees that Require Proj.Defs could name a trusted file and the solver's file, and refuses the run as a library violation instead of letting either be picked." }

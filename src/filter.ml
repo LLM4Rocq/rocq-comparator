@@ -35,6 +35,21 @@ type policy = {
    [permitted_plugins]. *)
 let denied_plugins = [ "extraction" ]
 
+(* Rocq-Elpi is different: its plugin is a language runtime whose builtins
+   include [system], [open_out] and friends, so a solution that can DEFINE or
+   EXTEND an elpi program (or run one inline with [Elpi Query]) can spawn a
+   shell inside the sandbox.  Running an already-installed program
+   (HB.instance, an [Elpi Foo args] call, an elpi tactic) is fine: its code is
+   the switch's, and whatever term it builds is checked by the kernel.  The
+   entry names are the VERNAC COMMAND EXTEND blocks of
+   rocq_elpi_vernacular_syntax.mlg; [Elpi Query] is the first two rules of
+   ElpiRun. *)
+let denied_elpi_entries = [ "ElpiNamed"; "ElpiAccumulate" ]
+
+let elpi_program_definition (ext : extend_name) =
+  List.mem ext.ext_entry denied_elpi_entries
+  || (ext.ext_entry = "ElpiRun" && ext.ext_index < 2)
+
 let ok = Result.Ok ()
 let deny what = Result.Error what
 
@@ -132,6 +147,8 @@ let check_synterp p (e : synterp_vernac_expr) =
       else if List.mem plug denied_plugins then
         deny ("command from the " ^ plug ^ " plugin (" ^ ext.ext_entry
               ^ "), which acts outside the kernel")
+      else if plug = "elpi" && elpi_program_definition ext then
+        deny "defining or extending an elpi program"
       else ok)
   (* allowed *)
   | VernacReservedNotation _ | VernacNotation _ | VernacDeclareCustomEntry _

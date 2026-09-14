@@ -170,22 +170,25 @@ let resolve_name ~(top : DirPath.t) (name : string) : (Constant.t, string) resul
 
 (* Every local constant of the challenge that has no body and is not a target:
    the axioms and admitted helpers the challenge itself is built out of. *)
-let collect_challenge_axioms ~(top : DirPath.t) (env : Environ.env)
-    (targets : target list) : (Constant.t * Constr.t) list =
+let collect_challenge_axioms ~(top : DirPath.t) ~(trusted : DirPath.t list)
+    (env : Environ.env) (targets : target list) : (Constant.t * Constr.t) list =
   let is_target c = List.exists (fun t -> Constant.CanOrd.equal t.kn c) targets in
+  (* a trusted helper (the challenge's own project closure) is part of the
+     specification exactly like the challenge file itself *)
+  let ours mp = is_local ~top mp || List.exists (fun dp -> is_local ~top:dp mp) trusted in
   Environ.fold_constants
     (fun c (cb : Declarations.constant_body) acc ->
        match cb.Declarations.const_body with
        | Declarations.Undef _
-         when is_local ~top (Constant.modpath c) && not (is_target c) ->
+         when ours (Constant.modpath c) && not (is_target c) ->
          (c, cb.Declarations.const_type) :: acc
        | Declarations.Undef _ | Declarations.Def _ | Declarations.OpaqueDef _
        | Declarations.Primitive _ | Declarations.Symbol _ -> acc)
     env []
 
-let extract ~(top : DirPath.t) ~(theorem_names : string list)
+let extract ?(trusted = []) ~(top : DirPath.t) ~(theorem_names : string list)
     ~(definition_names : string list) ~(permitted_axioms : string list)
-    ~(permit_challenge_axioms : bool) : (t, Verdict.reason * string) result =
+    ~(permit_challenge_axioms : bool) () : (t, Verdict.reason * string) result =
   let env = Global.env () in
   let rec resolve acc = function
     | [] -> Result.Ok (List.rev acc)
@@ -231,7 +234,7 @@ let extract ~(top : DirPath.t) ~(theorem_names : string list)
         permitted_axioms
     in
     let challenge_axioms =
-      if permit_challenge_axioms then collect_challenge_axioms ~top env targets else []
+      if permit_challenge_axioms then collect_challenge_axioms ~top ~trusted env targets else []
     in
     (* The challenge's own axioms are part of the specification, so their
        statements go into the closure too: the solution may not restate them. *)

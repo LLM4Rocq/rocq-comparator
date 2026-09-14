@@ -1,0 +1,5 @@
+(include_subdirs qualified)
+
+(coq.theory
+ (name Nse)
+ (synopsis "the same project, as a dune theory"))

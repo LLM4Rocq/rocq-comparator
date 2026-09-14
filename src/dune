@@ -20,3 +20,5 @@
   rocq-runtime.sysinit
   rocq-runtime.vernac
   rocq-runtime.plugins.ltac))
+
+(ocamllex rocqdep_lexer)

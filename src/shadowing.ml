@@ -44,22 +44,23 @@ let switch_roots () : string list =
 let overlaps (a : DirPath.t) (b : DirPath.t) =
   Libnames.is_dirpath_prefix_of a b || Libnames.is_dirpath_prefix_of b a
 
+let is_switch_entry e =
+  List.exists (fun r -> Config.is_under ~root:r (Loadpath.physical e)) (switch_roots ())
+
+(* protected namespaces: every non-empty logical path a switch entry owns *)
+let switch_logical () : DirPath.t list =
+  List.filter_map
+    (fun e ->
+       if is_switch_entry e then
+         let l = Loadpath.logical e in
+         if DirPath.is_empty l then None else Some l
+       else None)
+    (Loadpath.get_load_paths ())
+
 let check ~(top : DirPath.t) : (unit, Verdict.reason * string) result =
-  let roots = switch_roots () in
   let lps = Loadpath.get_load_paths () in
-  let is_switch e =
-    List.exists (fun r -> Config.is_under ~root:r (Loadpath.physical e)) roots
-  in
-  (* protected namespaces: every non-empty logical path a switch entry owns *)
-  let switch_logical =
-    List.filter_map
-      (fun e ->
-         if is_switch e then
-           let l = Loadpath.logical e in
-           if DirPath.is_empty l then None else Some l
-         else None)
-      lps
-  in
+  let is_switch = is_switch_entry in
+  let switch_logical = switch_logical () in
   let violation =
     List.find_map
       (fun e ->

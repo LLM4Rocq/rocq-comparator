@@ -15,8 +15,10 @@ proofs are missing (`Admitted.`, or any proof), a possibly adversarial
 
 Assumptions (mirroring Lean's comparator):
 
-1. The load path (every `.vo` the challenge or solution can `Require`) and the
-   challenge file are controlled by you or trustworthy.
+1. The installed load path (every `.vo` the challenge or solution can
+   `Require` from the switch), the challenge file, its project file and its
+   transitive `Require` closure inside that project are controlled by you or
+   trustworthy (section 16).
 2. You have not previously compiled the solution (or any adversarial file) in
    a way that could have modified the challenge or the load path.
 3. The sandbox (`sandbox-exec` on macOS, `landrun`/`bwrap` on Linux, or your
@@ -89,19 +91,26 @@ rocq-comparator check config.json
   │          wall-clock timeout enforced by the outer process (kill on expiry)
   │
   └─ (inner)
+     0. plan (section 16): discover the two files' projects, compute the
+        Require closures, classify trusted / untrusted, refuse collisions;
+        with a project the trusted helpers were compiled by a separate
+        trusted phase into scratch/trusted before this process started
      1. init Rocq once (Coqinit.init_ocaml / parse_arguments / init_runtime /
-        init_document) with: the trusted load path (-Q/-R/-I), -noinit only if
-        the config says so, native compiler OFF, VM per config (default on),
-        -impredicative-set / -indices-matter from config (both files share them)
+        init_document) with: the trusted load path (-Q/-R/-I) plus the scratch
+        mirrors, -noinit only if the config says so, native compiler OFF, VM
+        per config (default on), -impredicative-set / -indices-matter from
+        config (both files share them)
         → freeze ROOT = Vernacstate.freeze_full_state ()
      2. CHALLENGE: unfreeze ROOT; Coqinit.start_library ~top; parse+run every
         sentence of Challenge.v (AST filter applied in *lenient* mode: only
         commands that would break the comparator itself are rejected, e.g.
         Load/Chdir/AddLoadPath; the challenge is trusted);
         → extract SPEC (section 5) from Global.env ()
-     3. SOLUTION: unfreeze ROOT; start_library ~top (same name);
-        parse+run every sentence of Solution.v with the *strict* AST filter
-        (section 6) and per-sentence Control.timeout;
+     3. UNTRUSTED HELPERS, then SOLUTION: for each, unfreeze ROOT;
+        start_library (a helper under its own name, the solution under ~top);
+        parse+run every sentence with the *strict* AST filter (section 6) and
+        per-sentence Control.timeout under one deadline; a helper is scanned
+        by the hygiene check and saved to scratch/untrusted
         → env_s = Global.env ()
      4. CHECKS on env_s (all run, all reported; verdict ok iff all pass):
         a. joined: Safe_typing.is_joined_environment (Global.safe_env ())
@@ -111,8 +120,9 @@ rocq-comparator check config.json
         d. assumptions (section 7)
         e. environment hygiene (section 8)
         f. loaded libraries all resolve under the trusted load path roots
+        f'. every library loaded from scratch is one this run wrote, unchanged
         g. optional: save Challenge.vo to scratch, run `rocqchk -silent
-           -norec <top>` in the sandbox (section 9)
+           -norec <helper> (one each) -norec <top>` in the sandbox (section 9)
      5. print one JSON verdict on stdout (section 10); exit 0 / 1 / 2
 ```
 
@@ -361,7 +371,11 @@ exact call sequence in 9.2) into `<scratch>/<Top>.vo`, then run
 `rocqchk -silent -norec <top> -Q <scratch> <top-prefix>` plus the trusted
 `-Q/-R` flags, inside the same sandbox, with the remaining time budget.
 Non-zero exit → `rocqchk_failed`. The `.vo` is produced by *this* process, so
-unmarshalling it in `rocqchk` is not an adversarial input.
+unmarshalling it in `rocqchk` is not an adversarial input. With a project,
+one `-norec` per untrusted helper is added and the scratch mirrors are on
+rocqchk's load path: every library the solver's side produced is replayed,
+and the trusted helpers and installed libraries are admitted from `.vo`
+files the comparator itself wrote or the switch installed.
 
 ## 10. Config, CLI, output
 
@@ -377,7 +391,7 @@ Config (JSON; all paths relative to the config file's directory):
                        "Stdlib.Logic.FunctionalExtensionality.functional_extensionality_dep",
                        "Stdlib.Reals.ClassicalDedekindReals.*"],
   "loadpath": [ {"Q": ["theories", "Comp"]}, {"R": ["dir", "Logical"]}, {"I": ["mlpath"]} ],
-  "coqproject": "_CoqProject",
+  "coqproject": null,
   "top": "Challenge",
   "timeout_s": 600,
   "sandbox": "auto",
@@ -411,8 +425,13 @@ set and pinned to its challenge-side statement, so a solution may either
 rely on it as given or supply its own proof; set to `false` to require such
 helpers to be listed in `permitted_axioms` explicitly like any other axiom.
 
-`top` defaults to the challenge file's logical name derived from the load path
-(as `coqdep` would), else the basename. `sandbox` ∈ `auto | none |
+`loadpath` names directories of already compiled, trusted `.vo` files.
+`coqproject` is not a load-path source any more: it overrides project
+discovery (section 16), naming the `_CoqProject` or `dune-project` of both
+files, and `""` disables discovery; the default is to discover a project from
+each file's path. `top` defaults to the challenge file's logical name in its
+project, else the name derived from the load path (as `coqdep` would), else
+the basename. `sandbox` ∈ `auto | none |
 sandbox-exec | landrun | bwrap | {"command": ["...", "..."]}`; `auto` picks
 the first available for the platform and falls back to `none` **with
 `"sandboxed": false` in the verdict and a warning on stderr** (never silently).
@@ -482,6 +501,13 @@ capability or one attack):
 | reals_axioms (`Reals`, `Stdlib.Reals.Raxioms.*` permitted) | ok |
 | batch (3 solutions → 2 ok, 1 fail, JSONL) | — |
 | rocqchk_runs (verdict has `"rocqchk": "ok"`) | ok |
+| project_shared (shared `_CoqProject`, trusted `Defs`, checked `theories/Lib`) | ok, manifest labels |
+| project_dune (solution in its own dune project, `include_subdirs qualified`) | ok |
+| project_helper_axiom (`Axiom` in an untrusted helper) | forbidden_axiom |
+| project_helper_unset_guard (`Unset Guard Checking` in an untrusted helper) | forbidden_command |
+| project_shadow_binding (solution binding `Proj.Extra` under the challenge's `Proj`) | library_violation |
+| project_name_collision (solution ships its own `Proj.Defs`) | library_violation |
+| project_stale_vo (stale `Helper.vo` next to the untrusted `Helper.v`) | forbidden_axiom (the `.v` wins) |
 
 Plus a handful of unit tests (alcotest) for `compare.ml`'s universe renaming
 and `filter.ml`'s classification. No exhaustive unit-test drowning.
@@ -492,9 +518,11 @@ and `filter.ml`'s classification. No exhaustive unit-test drowning.
 dune-project, rocq-comparator.opam, LICENSE (Apache-2.0), README.md, DESIGN.md
 bin/main.ml                 cmdliner CLI → rocq-comparator
 src/ (library rocq_comparator)
-  config.ml  driver.ml  filter.ml  spec.ml  compare.ml  assumptions.ml
-  envcheck.ml  sandbox.ml  rocqchk.ml  verdict.ml  batch.ml
-test/fixtures/<name>/...   test/run_fixtures.ml   test/unit/*.ml
+  config.ml  project.ml  plan.ml  rocqdep_lexer.mll  driver.ml  filter.ml
+  spec.ml  compare.ml  assumptions.ml  envcheck.ml  shadowing.ml  sandbox.ml
+  rocqchk.ml  check.ml  verdict.ml
+examples/projects/{coqproject,dune}/   runnable project examples
+test/fixtures/<name>/...   test/run_fixtures.ml   test/unit/*.ml   test/infra/*.ml
 ```
 
 Build: `opam exec --switch=<project dir> -- dune build @all @runtest` in the
@@ -572,3 +600,192 @@ uses native int63/float64). See `rocq-comparator-web/BACKEND.md`. The browser
 build uses `Check.run_inner` with `rocqchk = None` and no OS sandbox (the
 browser origin is the sandbox); the strict AST filter, kernel comparison,
 assumptions, envcheck and shadowing all run as compiled OCaml in the worker.
+
+## 16. Projects
+
+A challenge or a solution may be one file of a project. This section is the
+design of that support; the rule it implements is the Lean comparator's
+assumption 1 (the challenge, its import closure and the project file are
+trusted) taken literally, and nothing the solver ships is ever trusted.
+
+### Discovery
+
+A file's project is found from its path: the nearest ancestor directory
+holding a `_CoqProject` (preferred) or a `dune-project`. The config's
+`coqproject` field overrides the search for both files; `""` disables it. A
+`_CoqProject` contributes its `-Q`/`-R` lines as bindings (directory,
+logical prefix, implicit or not), parsed by Rocq's own
+`CoqProject_file.read_project_file`. A `dune-project` contributes one binding
+per `coq.theory` / `rocq.theory` stanza found in the `dune` files below the
+root (skipping `_build`, `_opam`, hidden directories and nested projects),
+read with a small S-expression reader: `name`, `theories`, `modules`,
+`flags`, `stdlib`/`boot` and `include_subdirs` are interpreted, everything
+else is ignored. A dune theory is an implicit (`-R`) binding whose files are
+the stanza directory's `.v` files, plus the subdirectories' files with
+qualified names under `(include_subdirs qualified)` (cut by a nested
+`(include_subdirs no)` or a nested theory).
+
+The `.v` files of every binding are enumerated by the comparator with
+`lstat`; a symbolic link inside a bound directory is refused, so a project
+cannot reach outside its tree. A file that no binding covers has no project
+and is judged exactly as before this feature (the repository's own
+`dune-project` above the test fixtures is such a case: no stanza covers
+them). The comparator never runs `dune`, `make` or `rocq`; a source a dune
+`(rule ...)` would generate is simply absent, and a `Require` of it fails to
+compile.
+
+A project file may not: add ML paths (`-I`); pass flags other than `-w`
+selectors and the kernel flags (`-impredicative-set`, `-indices-matter`,
+`-noinit`) when they equal the config's; enable the native compiler; use
+`(stdlib no)` or `(boot)` without `noinit`; use `%{...}` variables,
+`(include ...)`, `(subdir ...)`, `(modules_flags ...)` or a set-language
+`(modules ...)`; give two files the same logical name. Problems in the
+challenge's project are `config_error` (exit 2, the operator's); problems in
+a solution's own project are `compile_error` (exit 1, a verdict about the
+solution), so that a malformed submission can never look like an
+infrastructure failure. `_CoqProject` file lists are accepted and ignored
+(they do not change what is bound or compiled).
+
+### The plan
+
+`Plan.make` (src/plan.ml), computed in each inner process before Rocq is
+initialised:
+
+1. discover the challenge's project, then the solution's (the same one when
+   it covers the solution file);
+2. read every planned file's `Require` statements with coqdep's own lexer
+   (`Rocqdep_lexer`, vendored from Rocq: the `coqdeplib` library registers a
+   warning name that the Rocq library already owns, so the two cannot be
+   linked into one process) and resolve each with Rocq's rule: `From F
+   Require D.B` names the file whose logical directory is `F.D` (exact), and
+   under an implicit binding a suffix match is enough; a challenge-project
+   file resolves only inside its project. A `Require` that names no planned
+   file is an installed library, resolved by Rocq at compile time from the
+   trusted load path or failing there. A `Require` that could name two
+   planned files is refused (a `library_violation` when one of them is the
+   challenge's, else the solver's `compile_error`);
+3. TRUSTED = the challenge's transitive closure, restricted to files of the
+   challenge's project (the challenge requiring a file of the solver's
+   project is a `challenge_error`); UNTRUSTED = the solution's closure minus
+   TRUSTED, whichever project a file belongs to. Both in dependency order
+   (depth-first postorder); a cycle is an error of its side; no file may
+   require either of the two top files;
+4. collisions: an untrusted file whose logical name equals, extends or is
+   extended by a trusted file's name is a `library_violation` (the imported
+   axiom policy is a prefix rule over library names, so nesting matters as
+   much as equality); when the two projects differ, a solution binding whose
+   logical prefix overlaps a challenge binding's is a `library_violation`;
+   any helper whose name overlaps `top` is refused; and, after `Driver.init`,
+   every planned name and binding is checked against the namespaces the
+   switch owns with Shadowing's list-free rule, and every dune `(theories
+   ...)` name must be a project binding or an installed logical path;
+5. caps: at most 100 untrusted files and 8 MB of untrusted source, so a
+   large dependency graph fails fast instead of at the outer kill.
+
+### Scratch layout and the two phases
+
+```
+<scratch>/config.json         the resolved config
+<scratch>/trusted/            written by the TRUSTED phase only
+   libraries.json             what it wrote: name, path, digest per .vo
+   b<i>/<rel>/<Base>.vo       mirror of binding i, trusted files
+<scratch>/untrusted/          written by the SOLUTION phase only
+   b<i>/<rel>/<Base>.vo       mirror of binding i, untrusted files
+   top/<Base>.vo              the solution top, for rocqchk only
+   verdict.json
+```
+
+When the challenge has a project, the outer process first runs the
+comparator in a sandbox that may write only `scratch/trusted`: it computes
+the plan, initialises Rocq with the trusted mirrors bound, runs the
+shadowing checks, compiles the trusted helpers under the lenient filter
+(each under its own name, with a deadline mapped to `challenge_error`),
+saves each `.vo` into its mirror and records the digests. Then the solution
+phase runs in a sandbox that may write only `scratch/untrusted` (its
+`TMPDIR` is that directory; the system temp dir, under which the scratch
+itself lives, is not writable). It reads `libraries.json`, checks that the
+trusted phase produced exactly the planned files with unchanged digests,
+creates the untrusted mirror directories (every directory a `.vo` will land
+in must exist before `Driver.init`, because `Loadpath.add_vo_path`
+enumerates subdirectories at that moment and the result is frozen into the
+root state), initialises Rocq with all mirrors bound, and proceeds as in
+section 3: challenge top, SPEC, untrusted helpers under the strict filter
+(each scanned by the hygiene check under its own name before being saved),
+solution top, the checks, rocqchk.
+
+Only the mirrors are ever bound on the load path, never a source directory,
+so a `.vo` the solver shipped, or a stale one next to a source, cannot be
+loaded. The untrusted mirrors are empty while the challenge compiles, so the
+challenge cannot resolve a `Require` to the solver's side even if the names
+were confusable. Every library loaded from anywhere under the scratch must
+be one this run wrote and must still have the digest recorded at save time;
+this gate runs after each untrusted helper, after the challenge, and before
+rocqchk, which then admits only those very files.
+
+The manifest labels each loaded library `installed`, `trusted` or
+`checked` from the plan's record, not from a path prefix. Axioms declared in
+trusted helpers are challenge axioms (permitted under
+`permit_challenge_axioms` and pinned to their types); the imported policy
+covers the libraries the challenge loaded, which include the trusted helpers
+and never the untrusted ones, so an axiom in an untrusted helper is always
+forbidden. A non-empty `permitted_libraries` implicitly includes the
+project's binding prefixes. `validate` runs the trusted phase and then the
+challenge alone; `batch` discovers each solution's project in its own run.
+
+The elpi plugin deserves a word. Its runtime exposes `system`, `open_out`
+and friends, so a solution that could define or extend an elpi program (or
+run one inline with `Elpi Query`) could write files inside the sandbox. In
+strict mode the filter now refuses `Elpi Program/Command/Tactic/Db/File`,
+`Elpi Accumulate` and `Elpi Query`, while calls to installed programs
+(`HB.instance`, exported commands, elpi tactics) stay allowed; a challenge
+can re-allow the rest with `permitted_plugins: ["elpi"]`. The plugin model
+remains deny-list based (`extraction`, and elpi program definition), backed
+by the sandbox for everything else.
+
+### Threat model additions
+
+The invariants of section 1 survive: every untrusted `.v` goes through the
+strict filter and the kernel inside the comparator; no solver-produced `.vo`
+is ever loaded; the challenge and its closure are trusted, nothing else from
+a submission is; the solution never runs a build system; rocqchk replays only
+what the comparator compiled on the solver's side; trusted libraries are
+never re-checked; there are no maintained lists. What the feature adds to
+the attack surface, and how each item is closed:
+
+- a writable directory holding trusted `.vo` files during the untrusted
+  phase: closed by the two sandboxed phases (write access to one side each)
+  and by the digest gate over everything loaded from scratch;
+- name confusion between the two sides: closed by the collision rules
+  (equal, nested, overlapping bindings, installed namespaces), applied before
+  anything is compiled, and by the empty untrusted mirrors while the
+  challenge compiles;
+- a project file that changes how Rocq runs: closed by refusing every
+  option other than `-w` and the kernel flags the config already sets;
+- a project tree that reaches outside itself: closed by `lstat` enumeration
+  with symbolic links refused, and by binding mirrors only;
+- a large graph exhausting the wall clock late: closed by the caps and by
+  one absolute deadline over the whole untrusted side.
+
+The two design reviews disagreed on three points; the more conservative
+choice was taken each time. Trusted `.vo` files live in their own directory
+with their own sandboxed writer (not one mirror per binding shared by both
+sides). Plan failures caused by the solver's files are exit 1 verdicts
+(never exit 2 retries). The full `coqdeplib` was dropped for its lexer plus
+the comparator's own resolution over the planned files, which also avoids
+coqdep's symlink-following directory walk.
+
+### Comparison with the Lean comparator
+
+| Lean | Here | Verdict |
+|---|---|---|
+| Assumption 1: the challenge, its import closure and the lakefile are trusted | The challenge, its Require closure inside its project, and its project file; installed libraries as before | Equal for files and imports. Stronger for the project file: a lakefile is a build program Lean's comparator runs through lake, our project file is read by the comparator and may only bind directories and select warnings |
+| Assumption 2: no adversarial file compiled earlier into the environment | Same, plus a fresh scratch per run and a frozen root state per library | Stronger: nothing on disk is reused between runs, and the solution's side is rebuilt from source every time |
+| Assumptions 3 and 4: the sandbox holds | sandbox-exec, landrun or bwrap, one writable directory per phase, no network; `sandboxed: false` reported honestly | Weaker on process and IPC restrictions (Lean's landrun invocation is tighter and their README adds a systemd-run guard); comparable on file writes now that the trusted side is read-only during the untrusted phase |
+| Assumption 5: the kernel is correct, reducible to "one of the kernels" with external kernels | The linked Rocq kernel, plus the rocqchk replay | Weaker: rocqchk is a separate implementation inside the Rocq project, not an independent kernel; see section 14 |
+| Assumption 6: not root | Same | Equal |
+| Never load oleans; export the solution and compare the export | Never load a solver-produced `.vo`; compile the solver's side in-process; trusted `.vo` files (installed and the trusted mirrors this run wrote) are unmarshalled | Equal or stronger on the untrusted side (no solver artefact is unmarshalled at all); weaker on the trusted side (Marshal is a larger surface than mmapped oleans, as section 2 notes) |
+| Guarantee 1: same statement | Kernel-term comparison of the statement and its full closure, modulo universe renaming with constraint entailment | Stronger: the closure includes bodies, universes, typing flags and inductive layout |
+| Guarantee 2: no more axioms than permitted | Assumptions by constructor, fully qualified; the imported policy over the libraries the challenge loaded; trusted helpers' axioms pinned; untrusted helpers' axioms never permitted | Equal to stronger: the same mechanism, plus the pinning of challenge-side assumptions |
+| Guarantee 3: accepted by the kernel | Safe_typing in-process, joined environment, default typing flags re-asserted on every solver-side constant, rocqchk replay of every solver-side library | Equal on the builtin replay; weaker on independent replay |
+| Definition holes need human review | Same | Equal |
+| Re-check of kernel-magic constants (Quot, primitive Nat) | Primitives are compared as part of the closure when the statement reaches them; no dedicated re-pin | Weaker: no named check that the prelude's primitives are the installed ones beyond the load-path and shadowing rules |
