@@ -90,13 +90,9 @@ val vo_dir / vo_path : scratch:string -> trusted:bool -> entry -> string
 val check_installed : t -> (unit, Verdict.reason * string) result   (* shadowing of switch namespaces, (theories) *)
 ```
 
-`Require_scan` (`src/require_scan.mll`) reads the `Require` statements of a
-source file. Rocq's own scanner is not reusable here: `rocq-runtime.coqdeplib`
-cannot be linked into a process that links the Rocq library (both register the
-warning name `unknown-option`, and Rocq raises on the second), and `rocq dep`
-resolves an ambiguous `Require` silently instead of reporting it. The scanner
-was validated against Rocq's lexer on every `.v` file of the switch (1868
-files, 6353 `Require` statements, identical output).
+`Rocqdep_lexer` is `tools/coqdep/lib/lexer.mll` of Rocq 9.2, vendored
+because `rocq-runtime.coqdeplib` cannot be linked into a process that links
+the Rocq library (a duplicate warning name at initialisation).
 
 ## Driver (CORE-A)
 

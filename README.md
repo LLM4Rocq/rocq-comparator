@@ -227,3 +227,6 @@ final backstop. There is no memory limit on macOS (`sandbox-exec` has none).
 
 A client-side (WebAssembly) web front-end lives in the sibling project
 `rocq-comparator-web`. See `DESIGN.md` and `CONTRACTS.md` for internals.
+
+Apache 2.0, except `src/rocqdep_lexer.mll`, which is Rocq's own file under
+LGPL 2.1. See `NOTICE`.

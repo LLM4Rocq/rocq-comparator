@@ -1,0 +1,21 @@
+rocq-comparator
+Copyright the rocq-comparator authors.
+
+This program is distributed under the Apache License 2.0 (see LICENSE), with
+one exception.
+
+src/rocqdep_lexer.mll is tools/coqdep/lib/lexer.mll of the Rocq Prover 9.2.0,
+copied unchanged. It is the lexer `rocq dep` uses to find the Require
+statements of a .v file. Its authors (INRIA, CNRS and contributors) distribute
+it under the GNU Lesser General Public License version 2.1, and it keeps that
+license here; the original notice is in the file's header. Refresh the copy
+from the Rocq sources of the switch when the Rocq version changes.
+
+It is copied rather than linked because rocq-runtime.coqdeplib cannot be
+linked into this program: that library's Args module registers the warning
+name "unknown-option", which Rocq's own library/goptions.ml registers too, and
+the second registration aborts the process at startup.
+
+The program also links the Rocq runtime libraries (rocq-runtime and the
+libraries it installs, LGPL 2.1) at build time, which the LGPL permits: the
+sources of this program are available, so the library part stays replaceable.
