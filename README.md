@@ -114,7 +114,6 @@ project or have one each; `batch` finds each solution's project on its own.
 `examples/projects/` has a runnable example in both layouts, laid out like
 the Lean comparator's Navier-Stokes challenge: definitions in a helper file
 both sides `Require`, statements in the challenge, proofs in the solution.
-Use that layout for Hierarchy Builder instances too (see Limitations).
 
 The trust rule is the Lean comparator's: the challenge and everything it
 transitively `Require`s in its project are trusted; the solution and
@@ -219,20 +218,6 @@ final backstop. There is no memory limit on macOS (`sandbox-exec` has none).
 - **Sections**: `Admitted` in a `Section` discharges all section variables,
   `Qed` only the used ones, so types can genuinely differ. Prefer toplevel
   statements or an explicit `Proof using` in both files.
-- **Anonymous HB instances in the top files**: Hierarchy Builder numbers an
-  anonymous `HB.instance` with a counter that lives in the elpi interpreter,
-  not in Rocq's state, so the solution's copy of a challenge-local instance
-  gets a different name and is rejected even for identical text. This is an
-  upstream issue, reported to the HB authors, and the comparator does not
-  work around it. Declare such instances in a helper file both sides
-  `Require` (see Projects).
-- **Universe constraints added by tactics**: a tactic that elaborates through
-  universe-polymorphic definitions, Equations' `funelim` for one, can attach a
-  universe constraint to a theorem stated over `Type`. The solution then
-  proves the statement only for universes meeting that constraint, and the
-  comparator reports a `statement_mismatch` naming the constraint. That is a
-  correct verdict, not a bug: state the challenge over `Set`, or declare the
-  needed constraint in the challenge, or prove it another way.
 - **`batch` recompiles the challenge per solution** (one sandboxed process
   each); it is more convenient than repeated `check`, not faster per solution.
 - `ROCQ_COMPARATOR_UNSAFE_NO_FILTER` is a test-only escape hatch: it runs the
