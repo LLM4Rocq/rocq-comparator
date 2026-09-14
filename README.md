@@ -25,7 +25,7 @@ model and pipeline.
 **Status.** This is a prototype. It was produced by Claude Fable 5.1
 under the direction of the project authors, and is inspired by the
 [Lean comparator](https://github.com/leanprover/comparator). Expect rough
-edges...
+edges, and read `DESIGN.md` before relying on it for anything that matters.
 
 ## Install
 
@@ -91,69 +91,47 @@ and the attempt should be retried rather than scored as a failed proof.
 | `theorem_names` / `definition_names` | `[]` / `[]` | targets; together must be non-empty |
 | `permitted_axioms` | `[]` | fully-qualified axiom names or `Prefix.*` wildcards; see below |
 | `axiom_policy` | `"imported"` | `imported`: also allow axioms from libraries the challenge imports. `listed`: only `permitted_axioms` |
-| `loadpath` | `[]` | `{"Q":[dir,log]}` / `{"R":[dir,log]}` / `{"I":[dir]}`, like `-Q`/`-R`/`-I`: directories of trusted, already compiled `.vo` files |
-| `coqproject` | discovered | the project file (`_CoqProject` or `dune-project`) of both `.v` files, instead of discovering it from their paths; `""` disables discovery. See Projects |
-| `top` | derived | logical library name both files compile under (the challenge's name in its project, else `coqdep`-style from `loadpath`, else basename) |
+| `loadpath` | `[]` | `{"Q":[dir,log]}` / `{"R":[dir,log]}`, like `-Q`/`-R`: directories of trusted, already compiled `.vo` files |
+| `coqproject` | discovered | project file of both `.v` files, instead of the one found from their paths; `""` disables discovery. See Projects |
+| `top` | derived | logical library name both files compile under (from the project, else `coqdep`-style, else the basename) |
 | `timeout_s` | `600` | wall-clock budget (per-sentence `Control.timeout` + outer kill at `+30`) |
 | `sandbox` | `"auto"` | `auto`, `none`, `sandbox-exec`, `landrun`, `bwrap`, or `{"command":["prog","arg"]}` |
 | `rocqchk` | `true` | replay the compiled library through `rocqchk` |
 | `vm` | `true` | bytecode VM for `vm_compute`; `false` passes `-bytecode-compiler no`. `native_compute` is always off |
 | `impredicative_set` / `indices_matter` | `false` | init flags, re-checked on every solution constant |
 | `noinit` | `false` | compile with `-noinit` (no prelude); rarely wanted |
-| `permitted_plugins` | `[]` | plugins to re-allow past the deny set: `extraction`, and `elpi` to let the solution define, extend or query elpi programs (denied by default, in a project or a single file alike, because elpi builtins can spawn processes and write files) |
-| `permitted_libraries` | `[]` | if non-empty, dirpath prefixes the solution may `Require` (the prefixes of its project's bindings are added implicitly) |
+| `permitted_plugins` | `[]` | re-allow a denied plugin: `extraction`, or `elpi` to let the solution define or run its own elpi programs (denied by default, since elpi builtins can spawn processes and write files) |
+| `permitted_libraries` | `[]` | if non-empty, dirpath prefixes the solution may `Require` (its own project's bindings are always allowed) |
 | `permit_challenge_axioms` | `true` | axioms/`Admitted` helpers in the challenge are auto-permitted, pinned to their challenge-side type (solution may assume or prove them); `false` requires listing them |
 
 ## Projects
 
-A challenge or a solution may be one file of a project rather than a
-standalone file. The comparator finds a file's project from its path: the
-nearest ancestor directory holding a `_CoqProject` (its `-Q`/`-R` lines) or
-a `dune-project` (the `coq.theory` / `rocq.theory` stanzas of the `dune`
-files below it, with `(include_subdirs qualified)` and `(modules ...)`
-understood). A file that no binding covers is a plain single file, exactly as
-before. The challenge and the solution may share one project or have one
-each, and `batch` discovers each solution's project on its own. The
-`coqproject` field overrides the search, and `"coqproject": ""` disables it.
-`examples/projects/` has a runnable project in both layouts. This is also
-the layout to use for challenges with Hierarchy Builder instances: declare
-them in a helper file both sides `Require` rather than in the top file (see
-Limitations).
+A challenge or a solution may be one file of a project. The comparator finds
+the project from the file's path: the nearest ancestor with a `_CoqProject`
+(`-Q`/`-R` lines) or a `dune-project` (`coq.theory` stanzas). A file no
+project covers is a plain single file, as before. The two files may share one
+project or have one each; `batch` finds each solution's project on its own.
+`examples/projects/` has a runnable example in both layouts, laid out like
+the Lean comparator's Navier-Stokes challenge: definitions in a helper file
+both sides `Require`, statements in the challenge, proofs in the solution.
+Use that layout for Hierarchy Builder instances too (see Limitations).
 
-The trust rule is the Lean comparator's assumption 1, applied literally:
+The trust rule is the Lean comparator's: the challenge and everything it
+transitively `Require`s in its project are trusted; the solution and
+everything else it pulls in are not. The comparator compiles the files it
+needs itself, in dependency order, trusted ones under the lenient filter and
+untrusted ones under the strict filter, and never runs `dune` or `make`. Only
+the `.vo` files it just produced are put on the load path, in a scratch
+directory the solution phase cannot write, so a `.vo` shipped by the solver
+is never loaded. `rocqchk` replays every untrusted file. Axioms in trusted
+files count as challenge axioms; axioms in untrusted files are never
+permitted.
 
-- trusted: the challenge and its transitive `Require` closure inside its own
-  project (plus, as always, the installed libraries);
-- untrusted: the solution and everything else in its closure.
-
-The comparator compiles only what is needed, in dependency order, each file
-under its own logical name: trusted files under the lenient filter, untrusted
-ones under the strict filter, with the solution's wall-clock budget covering
-the whole untrusted side. The resulting `.vo` files go into a mirror of the
-project under the run's scratch directory, and only those mirrors are bound
-on the load path: no `.vo` the solver shipped, and no stale one next to a
-source, can ever be loaded. Trusted files are compiled in a separate
-sandboxed phase that alone may write `scratch/trusted`; the solution phase
-may write only `scratch/untrusted`, and every library loaded from scratch is
-checked against the digest recorded when the comparator wrote it. `rocqchk`
-replays every untrusted library. Axioms declared in trusted files count as
-challenge axioms; axioms in untrusted files are never permitted.
-
-What a project may not do (`config_error` on the challenge's side,
-`compile_error` or `library_violation` on the solution's): add ML paths
-(`-I`), pass flags other than `-w` selectors and the kernel flags the config
-already sets, enable the native compiler, use `(stdlib no)` without
-`noinit`, use dune `%{...}` variables, `(include ...)`, `(subdir ...)` or
-set-language `(modules ...)`, hold symbolic links inside a bound directory,
-name two files alike, require either of the two files under comparison, or
-have an untrusted file share or nest under a trusted file's name, a
-solution binding overlap a challenge binding, or any file or binding shadow
-an installed namespace. Generated sources (dune `(rule ...)` targets) are not
-built, since the comparator never runs a build system: a `Require` of one
-fails to compile. The untrusted side is capped at 100 files and 8 MB of
-source. A `_CoqProject` that Rocq's own parser would refuse (a bare
-`-impredicative-set`, an unknown `-native-compiler` value, a repeated
-`-docroot`) is refused the same way, before that parser runs.
+A project may not add ML paths (`-I`), pass flags beyond `-w` and the
+kernel flags the config sets, contain symbolic links, generate sources with
+dune rules, or bind a name a trusted file or an installed library owns. The
+untrusted side is capped at 100 files and 8 MB. The full list of refusals and
+the reasoning are in `DESIGN.md`, section 16.
 
 ## Verdict
 
@@ -174,11 +152,9 @@ source. A `_CoqProject` that Rocq's own parser would refuse (a bare
   `libraries`, `rocqchk`; each `"ok"`, `"skipped"`, or `{"fail": "<message>"}`.
   Stages after the first failure are `"skipped"`.
 - `manifest`: reproducibility snapshot: OCaml/comparator versions, trusted
-  roots, and every loaded `.vo` with its digest and where its trust comes
-  from: `installed` (the switch), `trusted` (a file of the challenge's
-  project, compiled by this run) or `checked` (a file of the solution's
-  project, compiled by this run under the strict filter and replayed by
-  `rocqchk`).
+  roots, and every loaded `.vo` with its digest and its trust: `installed`,
+  `trusted` (challenge project file compiled by this run) or `checked`
+  (solution project file, strict filter and `rocqchk`).
 - `timing_s`: wall-clock seconds per stage.
 
 **Exit codes:** `0` accepted, `1` rejected (a real verdict), `2` infrastructure
@@ -208,17 +184,14 @@ Assumptions` and copy the names. There are no presets and no built-in list.
 
 `check`/`batch`/`validate` run inside an OS sandbox as defence in depth.
 `auto` picks `sandbox-exec` on macOS or the first of `landrun`/`bwrap` on
-Linux, falling back to `none` reported honestly as `sandboxed: false` plus a
-stderr warning, never silently. The sandbox denies network and all writes
-except the phase's own side of the per-run scratch directory
-(`scratch/untrusted` for the solution phase, which cannot touch the
-`scratch/trusted` the trusted phase wrote); `TMPDIR` points there too. Reads
-stay open (trusted `.vo` files must be readable). A custom sandbox command
-receives that writable directory as its argument. A solution that spins in an allocation-heavy loop is interrupted
-in-process by a `memprof-limits` token tripped at the deadline (allocation
-points, which `Control.timeout`'s checkpoints may never reach), with the outer
-wall-clock kill as a final backstop. There is no memory-size limit on macOS
-(`sandbox-exec` has no such primitive).
+Linux, falling back to `none` reported as `sandboxed: false` plus a stderr
+warning, never silently. The sandbox denies network and all writes except
+the phase's own part of the per-run scratch directory (`TMPDIR` points there
+too); reads stay open, since trusted `.vo` files must be readable. A custom
+sandbox command receives that writable directory as its argument. A solution
+that spins in an allocation-heavy loop is interrupted in-process by a
+`memprof-limits` token at the deadline, with the outer wall-clock kill as a
+final backstop. There is no memory limit on macOS (`sandbox-exec` has none).
 
 ## How it works
 
@@ -228,10 +201,9 @@ wall-clock kill as a final backstop. There is no memory-size limit on macOS
    extracted from its environment.
 3. The root is unfrozen again and the **solution** runs under a strict filter
    (a default-deny match over every `Vernacexpr` constructor; the plugin deny
-   set is `extraction` plus the definition, extension and inline running of
-   elpi programs, tactics are left to the kernel). With a project, the
-   helpers of each side are compiled the same way first, each under its own
-   name, and saved to the scratch mirrors (see Projects).
+   set is `extraction` and the solution's own elpi programs; tactics are left
+   to the kernel). With a project, each side's helper files are compiled the
+   same way first, each under its own name (see Projects).
 4. The two environments are compared at the kernel level: statements and
    closures as `Constr.t`, assumptions via `Assumptions.assumptions` classified
    by constructor, environment hygiene, and optionally a `rocqchk` replay.
@@ -247,14 +219,13 @@ wall-clock kill as a final backstop. There is no memory-size limit on macOS
 - **Sections**: `Admitted` in a `Section` discharges all section variables,
   `Qed` only the used ones, so types can genuinely differ. Prefer toplevel
   statements or an explicit `Proof using` in both files.
-- **Anonymous HB instances in the top files**: Hierarchy Builder names an
+- **Anonymous HB instances in the top files**: Hierarchy Builder numbers an
   anonymous `HB.instance` with a counter that lives in the elpi interpreter,
   not in Rocq's state, so the solution's copy of a challenge-local instance
-  gets a different name and the closure comparison rejects it even for
-  identical text. This is an upstream issue (reported to the HB authors) and
-  the comparator does not paper over it. Put such instances in a helper file
-  that both sides `Require` (see Projects): compiled once, trusted, no
-  mismatch.
+  gets a different name and is rejected even for identical text. This is an
+  upstream issue, reported to the HB authors, and the comparator does not
+  work around it. Declare such instances in a helper file both sides
+  `Require` (see Projects).
 - **`batch` recompiles the challenge per solution** (one sandboxed process
   each); it is more convenient than repeated `check`, not faster per solution.
 - `ROCQ_COMPARATOR_UNSAFE_NO_FILTER` is a test-only escape hatch: it runs the
