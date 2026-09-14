@@ -226,6 +226,13 @@ final backstop. There is no memory limit on macOS (`sandbox-exec` has none).
   upstream issue, reported to the HB authors, and the comparator does not
   work around it. Declare such instances in a helper file both sides
   `Require` (see Projects).
+- **Universe constraints added by tactics**: a tactic that elaborates through
+  universe-polymorphic definitions, Equations' `funelim` for one, can attach a
+  universe constraint to a theorem stated over `Type`. The solution then
+  proves the statement only for universes meeting that constraint, and the
+  comparator reports a `statement_mismatch` naming the constraint. That is a
+  correct verdict, not a bug: state the challenge over `Set`, or declare the
+  needed constraint in the challenge, or prove it another way.
 - **`batch` recompiles the challenge per solution** (one sandboxed process
   each); it is more convenient than repeated `check`, not faster per solution.
 - `ROCQ_COMPARATOR_UNSAFE_NO_FILTER` is a test-only escape hatch: it runs the
