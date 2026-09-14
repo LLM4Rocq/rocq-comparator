@@ -1,0 +1,2 @@
+{ "challenge": "chal/Challenge.v", "solution": "sol/Solution.v", "theorem_names": ["double_0"],
+  "timeout_s": 120 }

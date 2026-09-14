@@ -256,8 +256,9 @@ let t_plugins () =
     (denied strict (ext ~entry:"ElpiAccumulate" elpi));
   Alcotest.(check bool) "Elpi Query is denied" true
     (denied strict (ext ~entry:"ElpiRun" ~index:0 elpi));
-  Alcotest.(check bool) "permitted_plugins re-allows elpi programs" false
-    (denied { strict with RC.Filter.permitted_plugins = [ "elpi" ] } (ext ~entry:"ElpiNamed" elpi));
+  Alcotest.(check bool) "permitted_plugins [\"elpi\"] lifts all three, like any other plugin rule" true
+    (List.for_all (fun v -> not (denied { strict with RC.Filter.permitted_plugins = [ "elpi" ] } v))
+       [ ext ~entry:"ElpiNamed" elpi; ext ~entry:"ElpiAccumulate" elpi; ext ~entry:"ElpiRun" ~index:0 elpi ]);
   Alcotest.(check bool) "the challenge may define elpi programs" false
     (denied lenient (ext ~entry:"ElpiNamed" elpi))
 

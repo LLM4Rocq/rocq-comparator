@@ -43,6 +43,8 @@ let t_json_roundtrip () =
     Alcotest.(check bool) "rocqchk off" false c.RC.Config.rocqchk;
     Alcotest.(check bool) "vm off" false c.RC.Config.vm;
     Alcotest.(check bool) "impredicative set" true c.RC.Config.impredicative_set;
+    Alcotest.(check (list string)) "permitted_plugins (elpi) reaches the filter policy" [ "elpi" ]
+      c.RC.Config.permitted_plugins;
     Alcotest.(check bool) "sandbox none" true (c.RC.Config.sandbox = RC.Config.No_sandbox);
     Alcotest.(check string) "challenge is absolute" (Filename.concat dir "C.v")
       (RC.Config.challenge_path c);
@@ -120,7 +122,23 @@ let t_coqproject () =
     (Result.is_error (RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject")));
   write (Filename.concat dir "_CoqProject") "-Q theories Comp\n-arg -type-in-type\n";
   Alcotest.(check bool) "an unknown -arg is refused" true
-    (Result.is_error (RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject")))
+    (Result.is_error (RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject")));
+  (* the arms on which Rocq's parser would exit the process are refused first *)
+  List.iter
+    (fun (what, body) ->
+       write (Filename.concat dir "_CoqProject") body;
+       Alcotest.(check bool) (what ^ " is refused") true
+         (Result.is_error (RC.Project.coqproject ~flags (Filename.concat dir "_CoqProject"))))
+    [ ("a bare -impredicative-set", "-Q theories Comp\n-impredicative-set\n");
+      ("-docroot twice", "-Q theories Comp\n-docroot a\n-docroot a\n");
+      ("an unknown -native-compiler value", "-Q theories Comp\n-native-compiler bogus\n");
+      ("-native-compiler under -arg", "-Q theories Comp\n-arg -native-compiler -arg bogus\n") ];
+  write (Filename.concat dir "_CoqProject")
+    "-Q theories Comp  # a comment\n-native-compiler no\n-arg -impredicative-set\n";
+  Alcotest.(check bool) "the well-formed spellings still pass" true
+    (Result.is_ok
+       (RC.Project.coqproject ~flags:{ flags with RC.Project.impredicative_set = true }
+          (Filename.concat dir "_CoqProject")))
 
 (* Regression for the old hand-rolled tokenizer, which stripped quotes only
    AFTER splitting on whitespace, so a quoted directory containing a space was

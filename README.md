@@ -100,7 +100,7 @@ and the attempt should be retried rather than scored as a failed proof.
 | `vm` | `true` | bytecode VM for `vm_compute`; `false` passes `-bytecode-compiler no`. `native_compute` is always off |
 | `impredicative_set` / `indices_matter` | `false` | init flags, re-checked on every solution constant |
 | `noinit` | `false` | compile with `-noinit` (no prelude); rarely wanted |
-| `permitted_plugins` | `[]` | plugins to re-allow past the deny set (`extraction`, and `elpi` for defining, extending or querying elpi programs) |
+| `permitted_plugins` | `[]` | plugins to re-allow past the deny set: `extraction`, and `elpi` to let the solution define, extend or query elpi programs (denied by default, in a project or a single file alike, because elpi builtins can spawn processes and write files) |
 | `permitted_libraries` | `[]` | if non-empty, dirpath prefixes the solution may `Require` (the prefixes of its project's bindings are added implicitly) |
 | `permit_challenge_axioms` | `true` | axioms/`Admitted` helpers in the challenge are auto-permitted, pinned to their challenge-side type (solution may assume or prove them); `false` requires listing them |
 
@@ -148,7 +148,9 @@ solution binding overlap a challenge binding, or any file or binding shadow
 an installed namespace. Generated sources (dune `(rule ...)` targets) are not
 built, since the comparator never runs a build system: a `Require` of one
 fails to compile. The untrusted side is capped at 100 files and 8 MB of
-source.
+source. A `_CoqProject` that Rocq's own parser would refuse (a bare
+`-impredicative-set`, an unknown `-native-compiler` value, a repeated
+`-docroot`) is refused the same way, before that parser runs.
 
 ## Verdict
 

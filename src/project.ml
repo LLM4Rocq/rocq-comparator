@@ -34,6 +34,12 @@ let skip_entry name =
 
 let valid_id s = match Names.Id.of_string s with _ -> true | exception _ -> false
 
+let read_file path =
+  let ic = open_in_bin path in
+  let s = really_input_string ic (in_channel_length ic) in
+  close_in ic;
+  s
+
 let split_logical l = List.filter (fun s -> s <> "") (String.split_on_char '.' l)
 
 (* Every .v file under [dir], with the relative directory components of each.
@@ -122,14 +128,66 @@ let check_flags ~(flags : flags) (tokens : string list) : (unit, string) result 
 
 (* ---- _CoqProject ------------------------------------------------------- *)
 
+(* A few argument arms of Rocq's parser [CoqProject_file.process_cmd_line]
+   call [exit 1] instead of raising: a bare -impredicative-set (it wants -arg
+   -impredicative-set), an unknown -native-compiler value (on its own line, or
+   under -arg where the values are re-split and parsed again), and a repeated
+   -docroot or -generate-meta-for-package.  Inside the sandbox that exit would
+   surface as a sandbox_error (exit 2) for what is a malformed submission, so
+   these arms are refused before the parser runs.  Its tokenizer is not
+   exported; [tokens] mirrors it: whitespace separates, # starts a comment to
+   the end of the line, "..." quotes. *)
+let tokens (s : string) : (string list, string) result =
+  let n = String.length s in
+  let rec go acc i =
+    if i >= n then Result.Ok (List.rev acc)
+    else
+      match s.[i] with
+      | ' ' | '\n' | '\r' | '\t' -> go acc (i + 1)
+      | '#' -> go acc (comment i)
+      | '"' -> (
+        match String.index_from_opt s (i + 1) '"' with
+        | None -> Result.Error "unterminated string"
+        | Some j -> go (String.sub s (i + 1) (j - i - 1) :: acc) (j + 1))
+      | _ ->
+        let j = ref i in
+        while !j < n && not (List.mem s.[!j] [ ' '; '\n'; '\r'; '\t'; '#' ]) do incr j done;
+        go (String.sub s i (!j - i) :: acc) !j
+  and comment i = if i >= n || s.[i] = '\n' then i + 1 else comment (i + 1) in
+  go [] 0
+
+let check_exit_arms (toks : string list) : (unit, string) result =
+  let rec go seen = function
+    | [] -> Result.Ok ()
+    | "-impredicative-set" :: _ ->
+      Result.Error "-impredicative-set is only accepted as -arg -impredicative-set"
+    | ("-Q" | "-R") :: _ :: _ :: r -> go seen r
+    | "-native-compiler" :: v :: r when List.mem v [ "yes"; "no"; "ondemand" ] -> go seen r
+    | "-native-compiler" :: v :: _ -> Result.Error ("invalid -native-compiler value " ^ v)
+    | "-arg" :: a :: r ->
+      let unquoted = String.concat "" (String.split_on_char '\'' a) in
+      if CString.string_contains ~where:unquoted ~what:"-native-compiler" then
+        Result.Error "-native-compiler is not accepted under -arg"
+      else go seen r
+    | (("-docroot" | "-generate-meta-for-package") as o) :: _ :: r ->
+      if List.mem o seen then Result.Error ("option " ^ o ^ " given more than once")
+      else go (o :: seen) r
+    | _ :: r -> go seen r
+  in
+  go [] toks
+
 (* Rocq's own parser [CoqProject_file.read_project_file] resolves paths
    relative to the project file's directory; [.path] (not [.canonical_path])
-   keeps symlinks unresolved so directories compare verbatim.  A few malformed
-   argument arms inside that parser exit the process; a project file is
-   operator input (or, for the solution's own project, is read inside the
-   sandbox), which is acceptable. *)
+   keeps symlinks unresolved so directories compare verbatim. *)
 let coqproject ~(flags : flags) (path : string) : (t, string) result =
   let open CoqProject_file in
+  let* toks =
+    match tokens (read_file path) with
+    | Result.Ok t -> Result.Ok t
+    | Result.Error m -> Result.Error ("cannot parse " ^ path ^ ": " ^ m)
+    | exception Sys_error m -> Result.Error ("cannot open " ^ path ^ ": " ^ m)
+  in
+  let* () = Result.map_error (fun m -> path ^ ": " ^ m) (check_exit_arms toks) in
   match read_project_file ~warning_fn:(fun _ -> ()) path with
   | exception Parsing_error m -> Result.Error ("cannot parse " ^ path ^ ": " ^ m)
   | exception UnableToOpenProjectFile m -> Result.Error ("cannot open " ^ path ^ ": " ^ m)
@@ -220,12 +278,6 @@ let parse_sexps (s : string) : (sexp list, string) result =
       top (v :: acc)
   in
   top []
-
-let read_file path =
-  let ic = open_in_bin path in
-  let s = really_input_string ic (in_channel_length ic) in
-  close_in ic;
-  s
 
 type theory = {
   th_dir : string;

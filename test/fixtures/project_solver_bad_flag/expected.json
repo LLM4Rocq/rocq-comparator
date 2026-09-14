@@ -1,0 +1,2 @@
+{ "exit_code": 1, "reason": "compile_error", "detail_contains": "-impredicative-set",
+  "note": "The solver's own _CoqProject has a bare -impredicative-set line. Rocq's project-file parser exits the process on it (it wants -arg -impredicative-set), which inside the sandbox used to surface as sandbox_error, exit 2. The comparator now refuses the line before that parser runs: a malformed submission is a compile_error verdict, exit 1, never an infrastructure failure." }

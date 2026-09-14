@@ -298,7 +298,9 @@ term they build, and a disabled check or stray axiom is caught by the
 assumptions / typing-flag checks — so there is no allow-list of blessed
 plugins. Instead `Strict` denies only the extensions that act *outside* the
 kernel: the `denied_plugins` set, today just `extraction` (writes source
-files, can drive an external compiler). Every other extension is allowed. The
+files, can drive an external compiler), and the elpi entries that define,
+extend or query an elpi program (section 16). Every other extension is
+allowed. The
 in-process code-loading vectors (`Declare ML Module`, `Load`, `Cd`) are
 dedicated constructors denied above; `Add LoadPath` / `Add ML Path` no longer
 exist in Rocq 9.2. A challenge may re-allow a denied plugin per problem via
@@ -644,7 +646,13 @@ challenge's project are `config_error` (exit 2, the operator's); problems in
 a solution's own project are `compile_error` (exit 1, a verdict about the
 solution), so that a malformed submission can never look like an
 infrastructure failure. `_CoqProject` file lists are accepted and ignored
-(they do not change what is bound or compiled).
+(they do not change what is bound or compiled). Rocq's `_CoqProject` parser
+exits the process, rather than raising, on a few malformed arms (a bare
+`-impredicative-set`, an unknown `-native-compiler` value, a repeated
+`-docroot` or `-generate-meta-for-package`); inside the sandbox that exit
+would read as a `sandbox_error`, so the comparator tokenizes the file first
+(the parser's tokenizer is not exported; `Project.tokens` mirrors it) and
+refuses those arms with the verdict above before the parser runs.
 
 ### The plan
 
@@ -738,7 +746,11 @@ run one inline with `Elpi Query`) could write files inside the sandbox. In
 strict mode the filter now refuses `Elpi Program/Command/Tactic/Db/File`,
 `Elpi Accumulate` and `Elpi Query`, while calls to installed programs
 (`HB.instance`, exported commands, elpi tactics) stay allowed; a challenge
-can re-allow the rest with `permitted_plugins: ["elpi"]`. The plugin model
+can re-allow the rest with `permitted_plugins: ["elpi"]`, which lifts this
+rule exactly as it lifts the `extraction` one. The rule is not tied to
+projects: a single-file solution goes through the same strict filter, and
+its own file is the first place a solver would write an `Elpi Command` or
+`Elpi Query`, so the denial applies there too. The plugin model
 remains deny-list based (`extraction`, and elpi program definition), backed
 by the sandbox for everything else.
 
