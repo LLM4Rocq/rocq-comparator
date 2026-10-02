@@ -230,7 +230,10 @@ sysctl-read, mach-lookup, file-read* everywhere; file-write* only under
 `scratch` (the writable side) and `/dev/null`, `/dev/tty`; deny network*.
 The system temp dir is not writable: the child's `TMPDIR` is the writable
 side. For `Landrun`:
-`landrun --best-effort --ro / --rw /dev --rwx <scratch> --ldd --add-exec -- argv`.
+`landrun --best-effort --rox / --rw /dev --rwx <scratch> --ldd --add-exec --env K ... -- argv`,
+with one `--env K` per key of `inner_env_allowlist`: Landlock needs the EXECUTE right for every
+`execve` (the inner process runs rocqchk), and landrun starts its command with an empty
+environment otherwise.
 For `Bwrap`:
 `bwrap --ro-bind / / --dev /dev --bind <scratch> <scratch> --unshare-net --die-with-parent -- argv`.
 `Custom l` → `l @ [scratch] @ ["--"] @ argv`.

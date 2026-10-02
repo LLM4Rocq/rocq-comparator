@@ -160,8 +160,16 @@ let wrap (k : kind) ~scratch ~argv : string list =
     write_file profile (sandbox_exec_profile ~scratch);
     [ "sandbox-exec"; "-f"; profile ] @ argv
   | Landrun ->
-    [ "landrun"; "--best-effort"; "--ro"; "/"; "--rw"; "/dev"; "--rwx"; scratch;
-      "--ldd"; "--add-exec"; "--" ] @ argv
+    (* --rox, not --ro: Landlock needs the EXECUTE right for every execve, and the
+       inner process runs rocqchk (the macOS profile allows process* likewise);
+       writes stay limited to [scratch] and /dev.  --env: landrun starts the command
+       with an empty environment, so forward the allow-list explicitly (landrun
+       copies each key's value from its own environment, already reduced to the
+       allow-list by [inner_env], and skips unset keys). *)
+    [ "landrun"; "--best-effort"; "--rox"; "/"; "--rw"; "/dev"; "--rwx"; scratch;
+      "--ldd"; "--add-exec" ]
+    @ List.concat_map (fun k -> [ "--env"; k ]) inner_env_allowlist
+    @ [ "--" ] @ argv
   | Bwrap ->
     [ "bwrap"; "--ro-bind"; "/"; "/"; "--dev"; "/dev";
       "--bind"; scratch; scratch;
