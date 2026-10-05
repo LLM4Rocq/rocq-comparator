@@ -288,7 +288,28 @@ let t_wrap () =
      Alcotest.(check bool) "denies the network" true (has "(deny network*)");
      Alcotest.(check bool) "allows writing into the scratch dir" true
        (has (Unix.realpath scratch))
-   | _ -> Alcotest.fail "unexpected sandbox-exec argv")
+   | _ -> Alcotest.fail "unexpected sandbox-exec argv");
+  (* landrun: the inner process execs rocqchk, so the read-only tree must be
+     executable, and landrun forwards no environment unless asked. *)
+  let w = RC.Sandbox.wrap RC.Sandbox.Landrun ~scratch ~argv in
+  let rec split acc = function
+    | "--" :: rest -> (List.rev acc, rest)
+    | x :: rest -> split (x :: acc) rest
+    | [] -> (List.rev acc, [])
+  in
+  let opts, cmd = split [] w in
+  let rec pair a b = function
+    | x :: (y :: _ as rest) -> (x = a && y = b) || pair a b rest
+    | _ -> false
+  in
+  Alcotest.(check string) "landrun is the wrapper" "landrun" (List.hd w);
+  Alcotest.(check (list string)) "landrun: the command follows --" argv cmd;
+  Alcotest.(check bool) "landrun: / is executable" true (pair "--rox" "/" opts);
+  Alcotest.(check bool) "landrun: / is not merely readable" false (pair "--ro" "/" opts);
+  Alcotest.(check bool) "landrun: the scratch dir is writable" true (pair "--rwx" scratch opts);
+  List.iter
+    (fun k -> Alcotest.(check bool) ("landrun: forwards " ^ k) true (pair "--env" k opts))
+    RC.Sandbox.inner_env_allowlist
 
 let t_run () =
   let r = RC.Sandbox.run ~timeout_s:20. [ "/bin/echo"; "hello" ] in
